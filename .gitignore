@@ -1,0 +1,23 @@
+# Secrets and local runtime state
+.env
+*.pem
+*.key
+
+# Reproducible generated data and experiment artefacts
+data/*.ndjson
+data/*.parquet
+data/*.csv
+logs/
+raw_runs.csv
+
+# Python and Spark local state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+checkpoints/
+metrics/
+spark-events/
+
+# OS/editor files
+.DS_Store
+Thumbs.db

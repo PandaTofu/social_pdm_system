@@ -1,0 +1,5 @@
+{
+  "$id": "social-pdm.telemetry.v2",
+  "required": ["event_id", "event_time", "ingest_time", "schema_version", "data_center_id", "rack_id", "server_id", "service_name", "cpu_util_pct", "memory_util_pct", "disk_util_pct", "disk_iops", "disk_queue_depth", "network_in_mbps", "network_out_mbps", "request_rate_rps", "response_p50_ms", "response_p95_ms", "error_rate", "timeout_rate", "queue_depth", "active_connections", "software_version", "config_version", "cache_hit_ratio", "gc_pause_ms"],
+  "properties": {"schema_version": {"const": 2}}
+}

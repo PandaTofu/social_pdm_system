@@ -1,0 +1,103 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on: [zookeeper]
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mongo:
+    image: mongo:7.0
+    ports: ["27017:27017"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    volumes: ["mongo_data:/data/db"]
+
+  minio:
+    image: minio/minio:RELEASE.2024-08-03T04-33-23Z
+    command: server /data --console-address :9001
+    ports: ["9000:9000", "9001:9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: ["minio_data:/data"]
+
+  nifi:
+    image: apache/nifi:1.27.0
+    ports: ["8443:8443"]
+    environment:
+      NIFI_WEB_HTTPS_PORT: 8443
+      SINGLE_USER_CREDENTIALS_USERNAME: nifiadmin
+      SINGLE_USER_CREDENTIALS_PASSWORD: change-me-before-deploying
+
+  h2o:
+    image: h2oai/h2o-3:3.46.0.6
+    ports: ["54321:54321"]
+    command: ["-name", "social-pdm-h2o"]
+
+  spark-master:
+    image: bitnami/spark:3.5.1
+    ports: ["7077:7077", "8080:8080"]
+    environment:
+      SPARK_MODE: master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+    volumes: ["./spark:/opt/pdm/spark", "spark_data:/data"]
+
+  spark-worker:
+    image: bitnami/spark:3.5.1
+    depends_on: [spark-master]
+    ports: ["8081:8081"]
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 6G
+      SPARK_WORKER_CORES: 2
+    volumes: ["./spark:/opt/pdm/spark", "spark_data:/data"]
+
+  schema-registry:
+    build: {context: ., dockerfile: Dockerfile.app}
+    command: python /app/apps/schema_registry.py
+    ports: ["8088:8088"]
+
+  generator:
+    build: {context: ., dockerfile: Dockerfile.app}
+    depends_on: [kafka]
+    volumes: ["./configs:/app/configs:ro", "generator_data:/data"]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports: ["9090:9090"]
+    volumes: ["./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes: ["grafana_data:/var/lib/grafana"]
+
+volumes:
+  mongo_data: {}
+  minio_data: {}
+  spark_data: {}
+  generator_data: {}
+  grafana_data: {}
