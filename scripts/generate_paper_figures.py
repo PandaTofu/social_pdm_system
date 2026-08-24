@@ -6,77 +6,81 @@ reported test metrics can be traced to a completed, time-split experiment.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
-
-
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_svg(path: Path, width: int, height: int, body: list[str]) -> None:
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+           '<style>text{font-family:Arial,sans-serif;fill:#1f2937}.title{font-size:20px;font-weight:bold}.label{font-size:14px}.small{font-size:12px}.axis{stroke:#374151;stroke-width:1}.grid{stroke:#d1d5db;stroke-width:1}.box{fill:#e8f1fa;stroke:#4c78a8;stroke-width:1.5}</style>']
+    svg.extend(body)
+    svg.append("</svg>")
+    path.write_text("\n".join(svg), encoding="utf-8")
 
 
 def save_drift_figure(drift: dict, output: Path) -> None:
     series = drift["feature_ks_d"]
     names = list(series)
     values = [series[name] for name in names]
-    figure, axis = plt.subplots(figsize=(8.0, 4.4))
-    bars = axis.bar(names, values, color="#4C78A8")
-    axis.axhline(drift["threshold"], color="#D62728", linestyle="--", label=f"Threshold = {drift['threshold']:.2f}")
-    axis.set_ylabel("KS-D statistic")
-    axis.set_title("Feature drift detection")
-    axis.tick_params(axis="x", rotation=22)
-    axis.set_ylim(0, max(max(values) * 1.25, drift["threshold"] * 1.25))
-    for bar, value in zip(bars, values):
-        axis.text(bar.get_x() + bar.get_width() / 2, value + 0.006, f"{value:.3f}", ha="center", va="bottom", fontsize=9)
-    axis.legend(frameon=False)
-    figure.tight_layout()
-    figure.savefig(output, dpi=300, bbox_inches="tight")
-    plt.close(figure)
+    maximum, left, top, chart_height = max(max(values) * 1.25, drift["threshold"] * 1.25), 75, 55, 270
+    body = ['<text x="300" y="28" text-anchor="middle" class="title">Feature drift detection</text>',
+            f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + chart_height}" class="axis"/>',
+            f'<line x1="{left}" y1="{top + chart_height}" x2="570" y2="{top + chart_height}" class="axis"/>']
+    for tick in (0, maximum / 2, maximum):
+        y = top + chart_height - tick / maximum * chart_height
+        body += [f'<line x1="{left}" y1="{y:.1f}" x2="570" y2="{y:.1f}" class="grid"/>', f'<text x="66" y="{y + 4:.1f}" text-anchor="end" class="small">{tick:.2f}</text>']
+    threshold_y = top + chart_height - drift["threshold"] / maximum * chart_height
+    body += [f'<line x1="{left}" y1="{threshold_y:.1f}" x2="570" y2="{threshold_y:.1f}" stroke="#d62728" stroke-width="2" stroke-dasharray="6 4"/>',
+             f'<text x="566" y="{threshold_y - 7:.1f}" text-anchor="end" class="small">threshold = {drift["threshold"]:.2f}</text>']
+    for index, (name, value) in enumerate(zip(names, values)):
+        x, width, height = 95 + index * 96, 52, value / maximum * chart_height
+        y = top + chart_height - height
+        body += [f'<rect x="{x}" y="{y:.1f}" width="{width}" height="{height:.1f}" fill="#4c78a8"/>',
+                 f'<text x="{x + width / 2}" y="{y - 7:.1f}" text-anchor="middle" class="small">{value:.3f}</text>',
+                 f'<text x="{x + width / 2}" y="{top + chart_height + 18}" text-anchor="middle" class="small">{html.escape(name)}</text>']
+    body.append('<text x="22" y="200" text-anchor="middle" class="label" transform="rotate(-90 22 200)">KS-D statistic</text>')
+    write_svg(output, 620, 385, body)
 
 
 def save_performance_figure(result: dict, output: Path) -> None:
-    figure, axes = plt.subplots(1, 2, figsize=(9.2, 4.2))
-    f1_names = ["Static RF\n(0.50)", "Adaptive RF\n(0.50)", "Adaptive RF\n(calibrated)"]
+    f1_names = ["Static RF (0.50)", "Adaptive RF (0.50)", "Adaptive RF (calibrated)"]
     f1_values = [result["static_f1_at_0_5"], result["adaptive_f1_at_0_5"], result["adaptive_f1_at_calibrated_threshold"]]
-    bars = axes[0].bar(f1_names, f1_values, color=["#7F7F7F", "#E45756", "#59A14F"])
-    axes[0].set_ylim(0, 0.65)
-    axes[0].set_ylabel("F1 score")
-    axes[0].set_title("Held-out F1 (days 6-7)")
-    for bar, value in zip(bars, f1_values):
-        axes[0].text(bar.get_x() + bar.get_width() / 2, value + 0.015, f"{value:.3f}", ha="center", fontsize=9)
-    auc_names = ["Static RF", "Adaptive RF"]
     auc_values = [result["static_aucpr"], result["adaptive_aucpr"]]
-    bars = axes[1].bar(auc_names, auc_values, color=["#7F7F7F", "#59A14F"])
-    axes[1].set_ylim(0, 0.45)
-    axes[1].set_ylabel("Area under precision-recall curve")
-    axes[1].set_title("Ranking quality on held-out days 6-7")
-    for bar, value in zip(bars, auc_values):
-        axes[1].text(bar.get_x() + bar.get_width() / 2, value + 0.012, f"{value:.3f}", ha="center", fontsize=9)
-    figure.tight_layout()
-    figure.savefig(output, dpi=300, bbox_inches="tight")
-    plt.close(figure)
+    body = ['<text x="450" y="28" text-anchor="middle" class="title">Held-out performance comparison (days 6-7)</text>']
+    panels = [(60, 390, "F1 score", f1_names, f1_values, ["#7f7f7f", "#e45756", "#59a14f"], 0.65),
+              (500, 810, "AUC-PR", ["Static RF", "Adaptive RF"], auc_values, ["#7f7f7f", "#59a14f"], 0.45)]
+    for start, end, title, names, values, colors, maximum in panels:
+        base, top = 325, 80
+        body += [f'<text x="{(start + end) / 2}" y="55" text-anchor="middle" class="label">{title}</text>',
+                 f'<line x1="{start}" y1="{top}" x2="{start}" y2="{base}" class="axis"/>', f'<line x1="{start}" y1="{base}" x2="{end}" y2="{base}" class="axis"/>']
+        for index, (name, value, color) in enumerate(zip(names, values, colors)):
+            width = 54; step = (end - start - 60) / len(names); x = start + 32 + index * step
+            height = value / maximum * (base - top); y = base - height
+            body += [f'<rect x="{x:.1f}" y="{y:.1f}" width="{width}" height="{height:.1f}" fill="{color}"/>', f'<text x="{x + width / 2:.1f}" y="{y - 7:.1f}" text-anchor="middle" class="small">{value:.3f}</text>', f'<text x="{x + width / 2:.1f}" y="{base + 18}" text-anchor="middle" class="small">{html.escape(name)}</text>']
+    write_svg(output, 875, 385, body)
 
 
 def save_architecture_figure(output: Path) -> None:
-    figure, axis = plt.subplots(figsize=(11.0, 2.8))
-    axis.axis("off")
+    body = ['<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#4c78a8"/></marker></defs>']
     nodes = [
         (0.03, "Telemetry\ningestion"), (0.24, "Spark quality\nvalidation + dedupe"),
         (0.47, "KS drift\nmonitoring"), (0.69, "Feedback-weighted\nH2O RF retraining"),
         (0.90, "Calibrated\nalerts"),
     ]
     for position, label in nodes:
-        patch = FancyBboxPatch((position, 0.34), 0.15, 0.32, boxstyle="round,pad=0.018", facecolor="#E8F1FA", edgecolor="#4C78A8", linewidth=1.3)
-        axis.add_patch(patch)
-        axis.text(position + 0.075, 0.50, label, ha="center", va="center", fontsize=10)
+        x = int(position * 1000)
+        body += [f'<rect x="{x}" y="85" width="150" height="90" rx="8" class="box"/>']
+        for line_index, line in enumerate(label.split("\n")):
+            body.append(f'<text x="{x + 75}" y="{122 + line_index * 20}" text-anchor="middle" class="label">{html.escape(line)}</text>')
     for position, _ in nodes[:-1]:
-        axis.annotate("", xy=(position + 0.205, 0.50), xytext=(position + 0.155, 0.50), arrowprops={"arrowstyle": "->", "color": "#4C78A8", "lw": 1.5})
-    axis.text(0.56, 0.16, "Drift detected: use delayed day-5 feedback for retraining and threshold calibration", ha="center", fontsize=9)
-    figure.tight_layout()
-    figure.savefig(output, dpi=300, bbox_inches="tight")
-    plt.close(figure)
+        x = int(position * 1000)
+        body.append(f'<line x1="{x + 150}" y1="130" x2="{x + 205}" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>')
+    body += ['<text x="560" y="225" text-anchor="middle" class="label">Drift detected: use delayed day-5 feedback for retraining and threshold calibration</text>']
+    write_svg(output, 1080, 255, body)
 
 
 def save_table(result: dict, drift: dict, output: Path) -> None:
@@ -92,9 +96,9 @@ def main() -> None:
     args = parser.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     result, drift = read_json(args.result), read_json(args.drift)
-    save_architecture_figure(args.out_dir / "fig1_system_architecture.png")
-    save_drift_figure(drift, args.out_dir / "fig2_ks_drift_detection.png")
-    save_performance_figure(result, args.out_dir / "fig3_model_comparison.png")
+    save_architecture_figure(args.out_dir / "fig1_system_architecture.svg")
+    save_drift_figure(drift, args.out_dir / "fig2_ks_drift_detection.svg")
+    save_performance_figure(result, args.out_dir / "fig3_model_comparison.svg")
     save_table(result, drift, args.out_dir / "table1_experiment_results.md")
     print(f"Figures written to {args.out_dir}")
 
