@@ -111,6 +111,7 @@ def main() -> None:
                                          fold_assignment="Stratified", seed=20260824)
         model.train(x=FEATURES, y=TARGET, training_frame=train_h2o)
         performance = model.model_performance(test_h2o)
+        cross_validation = model.cross_validation_metrics()
         output = args.output_dir / args.subset / "rf_baseline"
         output.mkdir(parents=True, exist_ok=True)
         predictions = model.predict(test_h2o)
@@ -118,6 +119,7 @@ def main() -> None:
         report = {
             "subset": args.subset, "task": f"failure within {args.horizon} cycles", "model": "H2O Random Forest",
             "cross_validation_folds": 10, "trees": args.trees, "train_rows": train_rows, "test_rows": test_rows,
+            "cv_f1_at_0_5": metric(cross_validation, "F1"),
             "f1_at_0_5": metric(performance, "F1"), "precision_at_0_5": metric(performance, "precision"),
             "recall_at_0_5": metric(performance, "recall"), "auc": float(performance.auc()),
             "duration_seconds": round(time.perf_counter() - started, 3),
@@ -125,7 +127,7 @@ def main() -> None:
         (output / "metrics.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps(report, indent=2))
     finally:
-        h2o.shutdown(prompt=False)
+        h2o.cluster().shutdown(prompt=False)
 
 
 if __name__ == "__main__":
