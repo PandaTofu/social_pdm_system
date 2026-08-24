@@ -8,6 +8,8 @@ data/*.ndjson
 data/*.parquet
 data/*.csv
 data/autodl_runtime/
+data/CMAPSSData/
+data/cmapss_output/
 logs/
 raw_runs.csv
 
