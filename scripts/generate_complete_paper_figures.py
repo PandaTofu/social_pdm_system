@@ -155,6 +155,8 @@ def cmapss_pr_comparison(comparison: dict[str, Any], comparison_path: Path, outp
     axes[0].legend(frameon=False, fontsize=8)
     confusion = comparison["models"]["random_forest"]["operating_metrics"]["confusion_matrix"]
     rf_metrics = comparison["models"]["random_forest"]["operating_metrics"]
+    requested_threshold = rf_metrics.get("requested_threshold", rf_metrics.get("threshold", 0.5))
+    actual_threshold = rf_metrics.get("threshold", requested_threshold)
     matrix = np.array([[confusion["tn"], confusion["fp"]], [confusion["fn"], confusion["tp"]]])
     image = axes[1].imshow(matrix, cmap="Blues")
     for row in range(2):
@@ -162,8 +164,8 @@ def cmapss_pr_comparison(comparison: dict[str, Any], comparison_path: Path, outp
             axes[1].text(column, row, f"{matrix[row, column]:,}", ha="center", va="center")
     axes[1].set(xticks=[0, 1], yticks=[0, 1], xticklabels=["Pred. normal", "Pred. failure"],
                 yticklabels=["Actual normal", "Actual failure"],
-                title=(f"Random Forest: requested {rf_metrics.get('requested_threshold', 0.5):.2f}, "
-                       f"effective {rf_metrics['threshold']:.3f}"))
+                title=(f"Random Forest: requested {requested_threshold:.2f}, "
+                       f"effective {actual_threshold:.3f}"))
     figure.colorbar(image, ax=axes[1], fraction=.046)
     save(figure, output)
 
