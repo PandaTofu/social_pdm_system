@@ -1,8 +1,9 @@
 """Compare a static and a KS-triggered adaptive H2O Random Forest on telemetry.
 
 Timeline: days 1-3 train both systems; day 5 is the detected drift window and
-supplies delayed feedback labels for retraining only; days 6-7 are held out for
-the final, identical evaluation.  This prevents retraining-label leakage.
+supplies delayed feedback labels.  A deterministic 70/30 feedback split keeps
+the threshold-calibration rows out of retraining; days 6-7 are held out for the
+final, identical evaluation.  This prevents label and threshold leakage.
 """
 from __future__ import annotations
 
@@ -36,12 +37,18 @@ def spark_session() -> SparkSession:
             .getOrCreate())
 
 
-def export_csv(frame: DataFrame, path: Path, balance_sample: bool) -> tuple[Path, int, int]:
-    selected = frame.select(*FEATURES, TARGET).dropna()
+def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
+               add_recency_weight: bool = False) -> tuple[Path, int, int]:
+    selected = frame.select(*FEATURES, TARGET, "day").dropna()
     if balance_sample:
         # Keep every scarce positive row; sample only negatives before H2O's
         # class balancing. This bounds local AutoDL memory without changing time order.
         selected = selected.sampleBy(TARGET, fractions={0: 0.08, 1: 1.0}, seed=20260824)
+    if add_recency_weight:
+        # Drift-era labels are deliberately four times as influential as the
+        # legacy regime.  This is an explicit, reproducible recency policy.
+        selected = selected.withColumn("sample_weight", F.when(F.col("day") == 5, F.lit(4.0)).otherwise(F.lit(1.0)))
+    selected = selected.drop("day")
     selected = selected.persist(StorageLevel.MEMORY_AND_DISK)
     try:
         total = selected.count()
@@ -52,17 +59,23 @@ def export_csv(frame: DataFrame, path: Path, balance_sample: bool) -> tuple[Path
     return next(path.glob("part-*.csv")), total, positives
 
 
-def f1_at_half(performance) -> float:
-    return float(performance.F1(thresholds=[0.5])[0][1])
+def f1_at_threshold(performance, threshold: float) -> float:
+    return float(performance.F1(thresholds=[threshold])[0][1])
 
 
-def train_h2o(csv_path: Path, trees: int):
+def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
     frame = h2o.import_file(str(csv_path))
     frame[TARGET] = frame[TARGET].asfactor()
     model = H2ORandomForestEstimator(ntrees=trees, max_depth=20, min_rows=5,
                                      balance_classes=True, seed=20260824)
-    model.train(x=FEATURES, y=TARGET, training_frame=frame)
+    model.train(x=FEATURES, y=TARGET, training_frame=frame,
+                weights_column="sample_weight" if use_recency_weight else None)
     return model
+
+
+def select_f1_threshold(performance) -> tuple[float, float]:
+    threshold, score = max(performance.F1(), key=lambda item: item[1])
+    return float(threshold), float(score)
 
 
 def main() -> None:
@@ -86,10 +99,14 @@ def main() -> None:
                 .withColumn("day", F.dayofmonth("event_time")))
         pre = data.filter(F.col("day").between(1, 3))
         drift_feedback = data.filter(F.col("day") == 5)
-        adaptive_training = pre.unionByName(drift_feedback) if drift_detected else pre
+        # Feedback split happens before both retraining and threshold tuning.
+        feedback_train = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) < 7)
+        feedback_calibration = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) >= 7)
+        adaptive_training = pre.unionByName(feedback_train) if drift_detected else pre
         evaluation = data.filter(F.col("day").between(6, 7))
         pre_csv, pre_rows, pre_positive = export_csv(pre, args.output_dir / "prepared" / "pre_drift_train", True)
-        adaptive_csv, adaptive_rows, adaptive_positive = export_csv(adaptive_training, args.output_dir / "prepared" / "adaptive_train", True)
+        adaptive_csv, adaptive_rows, adaptive_positive = export_csv(adaptive_training, args.output_dir / "prepared" / "adaptive_train", True, add_recency_weight=drift_detected)
+        calibration_csv, calibration_rows, calibration_positive = export_csv(feedback_calibration, args.output_dir / "prepared" / "feedback_calibration", False)
         eval_csv, eval_rows, eval_positive = export_csv(evaluation, args.output_dir / "prepared" / "evaluation", False)
     finally:
         spark.stop()
@@ -97,23 +114,31 @@ def main() -> None:
     try:
         h2o.init(ip="127.0.0.1", port=6008, max_mem_size="4G", nthreads=4)
         static_model = train_h2o(pre_csv, args.trees)
-        static_performance = static_model.model_performance(h2o.import_file(str(eval_csv)))
-        adaptive_model = train_h2o(adaptive_csv, args.trees)
+        evaluation_frame = h2o.import_file(str(eval_csv))
+        static_performance = static_model.model_performance(evaluation_frame)
+        adaptive_model = train_h2o(adaptive_csv, args.trees, use_recency_weight=drift_detected)
         adaptive_performance = adaptive_model.model_performance(h2o.import_file(str(eval_csv)))
+        calibration_performance = adaptive_model.model_performance(h2o.import_file(str(calibration_csv)))
+        adaptive_threshold, calibration_f1 = select_f1_threshold(calibration_performance)
         report = {
-            "protocol": "train days 1-3; KS-detected feedback/retrain day 5; evaluate days 6-7",
+            "protocol": "train days 1-3; KS-detected day-5 feedback split 70/30 for recency-weighted retraining/threshold calibration; evaluate days 6-7",
             "drift_detected": drift_detected, "retrain_triggered": drift_detected,
             "drift_monitor": drift_report, "trees": args.trees,
             "pre_drift_train": {"rows": pre_rows, "positive_rows": pre_positive},
             "adaptive_train": {"rows": adaptive_rows, "positive_rows": adaptive_positive},
+            "feedback_calibration": {"rows": calibration_rows, "positive_rows": calibration_positive},
             "evaluation": {"rows": eval_rows, "positive_rows": eval_positive},
-            "static_f1_at_0_5": f1_at_half(static_performance),
-            "adaptive_f1_at_0_5": f1_at_half(adaptive_performance),
+            "static_f1_at_0_5": f1_at_threshold(static_performance, 0.5),
+            "adaptive_f1_at_0_5": f1_at_threshold(adaptive_performance, 0.5),
+            "adaptive_operating_threshold": adaptive_threshold,
+            "adaptive_calibration_f1": calibration_f1,
+            "adaptive_f1_at_calibrated_threshold": f1_at_threshold(adaptive_performance, adaptive_threshold),
             "static_aucpr": float(static_performance.aucpr()),
             "adaptive_aucpr": float(adaptive_performance.aucpr()),
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
-        report["f1_change"] = report["adaptive_f1_at_0_5"] - report["static_f1_at_0_5"]
+        report["f1_change_at_0_5"] = report["adaptive_f1_at_0_5"] - report["static_f1_at_0_5"]
+        report["f1_change_at_operating_threshold"] = report["adaptive_f1_at_calibrated_threshold"] - report["static_f1_at_0_5"]
         (args.output_dir / "adaptive_comparison.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps(report, indent=2))
     finally:
