@@ -2,3 +2,4 @@ numpy==2.1.2
 kafka-python-ng==2.2.3
 Flask==3.0.3
 h2o==3.46.0.6
+matplotlib==3.11.1
