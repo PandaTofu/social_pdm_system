@@ -21,13 +21,19 @@ cd /root/autodl-tmp  # 优先使用 AutoDL 数据盘；按实际挂载路径调�
 git clone https://github.com/PandaTofu/social_pdm_system.git
 cd social_pdm_system
 
-conda create -n social-pdm python=3.11 openjdk=17 -y
-conda activate social-pdm
-export JAVA_HOME="$CONDA_PREFIX"
-export PATH="$JAVA_HOME/bin:$PATH"
+# Java 使用系统包，避免 Conda 默认 channel 中 OpenJDK 包不可用的问题
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-17-jre-headless
 
-python -m pip install --upgrade pip
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r autodl/requirements-autodl.txt
+# AutoDL 常见的 Miniconda 路径；创建到数据盘，避免占用容器层
+/root/miniconda3/bin/conda create -p /root/autodl-tmp/envs/social-pdm python=3.11 -y \
+  --override-channels -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+export PDM_ENV=/root/autodl-tmp/envs/social-pdm
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export PATH="$PDM_ENV/bin:$JAVA_HOME/bin:$PATH"
+
+python -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r autodl/requirements-autodl.txt
 java -version
 spark-submit --version
 ```
@@ -55,13 +61,7 @@ git remote add origin https://github.com/PandaTofu/social_pdm_system.git
 后续更新时，在本地重新生成 bundle 并上传，再在服务器仓库运行
 `git fetch /root/social_pdm_system.bundle main && git merge --ff-only FETCH_HEAD`。这样不依赖服务器能够访问 GitHub。
 
-若默认 Conda channel 不可访问，可为项目创建路径环境（示例使用清华镜像）：
-
-```bash
-/root/miniconda3/bin/conda create -p /root/autodl-tmp/envs/social-pdm python=3.11 -y \
-  --override-channels -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
-export PATH="/root/autodl-tmp/envs/social-pdm/bin:$PATH"
-```
+若你的 AutoDL 镜像中 Conda 不在 `/root/miniconda3/bin/conda`，先执行 `which conda`，再将上述 Conda 可执行文件路径替换为实际路径。
 
 如果 `conda` 不存在，使用现有 Python 虚拟环境；但仍需要 Java 17。不要使用 `sudo apt install docker`，当前容器并没有运行 Docker daemon 所需权限。
 
@@ -69,9 +69,9 @@ export PATH="/root/autodl-tmp/envs/social-pdm/bin:$PATH"
 
 ```bash
 cd /root/autodl-tmp/social_pdm_system
-conda activate social-pdm
-export JAVA_HOME="$CONDA_PREFIX"
-export PATH="$JAVA_HOME/bin:$PATH"
+export PDM_ENV=/root/autodl-tmp/envs/social-pdm
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export PATH="$PDM_ENV/bin:$JAVA_HOME/bin:$PATH"
 bash autodl/run_autodl_experiment.sh
 ```
 
