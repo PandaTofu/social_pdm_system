@@ -7,6 +7,7 @@
 data/*.ndjson
 data/*.parquet
 data/*.csv
+data/autodl_runtime/
 logs/
 raw_runs.csv
 
