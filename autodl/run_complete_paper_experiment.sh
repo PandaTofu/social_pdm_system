@@ -25,9 +25,10 @@ python ml/drift_monitor.py \
   --threshold 0.20 --alpha 0.05 --out "$RUN_ROOT/drift_report.json"
 
 spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
-  spark/cmapss_rf_classification_baseline.py \
-  --data-dir "$CMAPSS_DIR" --subset FD001 --output-dir "$RUN_ROOT/cmapss" --horizon 30 --trees 100 \
-  2>&1 | tee logs/cmapss-classification.log
+  spark/cmapss_classification_comparison.py \
+  --data-dir "$CMAPSS_DIR" --subset FD001 --output-dir "$RUN_ROOT/cmapss" \
+  --horizon 30 --trees 100 --folds 10 \
+  2>&1 | tee logs/cmapss-model-comparison.log
 
 spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
   ml/adaptive_telemetry_comparison.py \
@@ -43,8 +44,7 @@ spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
 python scripts/generate_complete_paper_figures.py \
   --result "$RUN_ROOT/adaptive_experiment/adaptive_comparison.json" \
   --drift "$RUN_ROOT/drift_report.json" \
-  --cmapss-metrics "$RUN_ROOT/cmapss/FD001/rf_baseline/metrics.json" \
-  --cmapss-predictions "$RUN_ROOT/cmapss/FD001/rf_baseline/predictions.csv" \
+  --cmapss-comparison "$RUN_ROOT/cmapss/FD001/classification_comparison/comparison.json" \
   --system-benchmark "$RUN_ROOT/system_benchmark.json" \
   --shap-contributions "$RUN_ROOT/adaptive_experiment/shap_alert_explanations.csv" \
   --out-dir "$FIGURES"

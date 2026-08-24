@@ -141,7 +141,7 @@ python -m pip install -r autodl/requirements-autodl.txt
 bash autodl/run_complete_paper_experiment.sh
 ```
 
-完整入口依次运行C-MAPSS分类验证、KS漂移检测、静态/重训/加权/完整方法消融、逐日稳定性、单节点Spark规模实验、TreeSHAP解释和统一绘图。实验数据保存在`data/autodl_runtime/paper_run`，图片保存在`reports/generated`。
+完整入口依次运行C-MAPSS Logistic/RF/GBT同协议分类比较与非回归检查、KS漂移检测、静态/重训/加权/完整方法消融、逐日稳定性、单节点Spark规模实验、TreeSHAP解释和统一绘图。实验数据保存在`data/autodl_runtime/paper_run`，图片保存在`reports/generated`。
 
 如果服务器无法连接GitHub，继续使用第1节的Git bundle更新方法。
 

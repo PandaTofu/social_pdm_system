@@ -19,7 +19,7 @@ AutoDL 用户请直接阅读 [AutoDL部署指南.md](AutoDL部署指南.md)，�
 bash autodl/run_complete_paper_experiment.sh
 ```
 
-脚本依次完成漂移检测、C-MAPSS验证、自适应/消融实验、单节点Spark性能实验和统一绘图。输出位于`data/autodl_runtime/paper_run`及`reports/generated`。所有图只读取真实实验产物。
+脚本依次完成漂移检测、C-MAPSS Logistic/RF/GBT同协议比较与非回归检查、自适应/消融实验、单节点Spark性能实验和统一绘图。输出位于`data/autodl_runtime/paper_run`及`reports/generated`。所有图只读取真实实验产物。
 
 实验完成后可启动最小业务Dashboard：
 

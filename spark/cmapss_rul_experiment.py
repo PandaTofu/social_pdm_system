@@ -103,7 +103,13 @@ def main() -> None:
                   .select("unit_id", F.greatest(F.lit(0.0), F.col("prediction")).alias("predicted_rul")))
         result = (scored.join(F.broadcast(labels), "unit_id", "inner")
                   .withColumn("error", F.col("predicted_rul") - F.col("actual_rul"))
-                  .withColumn("absolute_error", F.abs("error")))
+                  .withColumn("absolute_error", F.abs("error"))
+                  # Standard C-MAPSS asymmetric score: late predictions
+                  # (positive error) receive the stronger exponential penalty.
+                  .withColumn("nasa_penalty", F.when(
+                      F.col("error") < 0,
+                      F.exp(-F.col("error") / F.lit(13.0)) - F.lit(1.0),
+                  ).otherwise(F.exp(F.col("error") / F.lit(10.0)) - F.lit(1.0))))
         output = args.output_dir / args.subset / args.model
         result.write.mode("overwrite").parquet(str(output / "predictions"))
 
@@ -113,6 +119,7 @@ def main() -> None:
             F.sqrt(F.avg(F.pow("error", 2))).alias("rmse"),
             F.avg("absolute_error").alias("mae"),
             F.avg("error").alias("mean_error"),
+            F.sum("nasa_penalty").alias("nasa_score"),
             F.avg(F.when(F.col("absolute_error") <= 10.0, F.lit(1.0)).otherwise(F.lit(0.0))).alias("within_10_cycles"),
             (F.lit(1.0) - F.sum(F.pow("error", 2)) /
              F.sum(F.pow(F.col("actual_rul") - F.lit(actual_mean), 2))).alias("r2"),

@@ -110,6 +110,76 @@ def cmapss_validation(metrics: dict[str, Any], predictions: Path, output: Path) 
     save(figure, output)
 
 
+def cmapss_model_comparison(comparison: dict[str, Any], output: Path) -> None:
+    order = [name for name in ("logistic_regression", "random_forest", "gradient_boosting")
+             if name in comparison["models"]]
+    metrics = ("precision", "recall", "f1", "pr_auc")
+    x = np.arange(len(order)); width = .19
+    figure, axis = plt.subplots(figsize=(9.4, 4.7))
+    for index, metric in enumerate(metrics):
+        values = [comparison["models"][name]["operating_metrics"][metric] for name in order]
+        axis.bar(x + (index - 1.5) * width, values, width, label=metric.replace("_", " ").upper())
+    axis.set_xticks(x, [comparison["models"][name]["display_name"] for name in order])
+    axis.set(title=f"C-MAPSS {comparison['subset']} model comparison",
+             ylabel="Official-test score", ylim=(0, 1))
+    axis.legend(frameon=False, ncol=4)
+    save(figure, output)
+
+
+def resolve_prediction_path(value: str, comparison_path: Path) -> Path:
+    candidate = Path(value)
+    if candidate.exists():
+        return candidate
+    sibling = comparison_path.parent / candidate.name
+    if sibling.exists():
+        return sibling
+    raise FileNotFoundError(f"Prediction artifact not found: {value}")
+
+
+def cmapss_pr_comparison(comparison: dict[str, Any], comparison_path: Path, output: Path) -> None:
+    figure, axes = plt.subplots(1, 2, figsize=(10.2, 4.4))
+    colors = {"logistic_regression": "#4C78A8", "random_forest": "#59A14F", "gradient_boosting": "#E45756"}
+    for name, model in comparison["models"].items():
+        path = resolve_prediction_path(model["predictions_csv"], comparison_path)
+        scores, actual = read_predictions(path)
+        recall, precision = precision_recall_curve(scores, actual)
+        axes[0].plot(recall, precision, color=colors.get(name), lw=1.6,
+                     label=f"{model['display_name']} ({model['operating_metrics']['pr_auc']:.3f})")
+    prevalence = comparison["test_distribution"]["positive_rate"]
+    axes[0].axhline(prevalence, color="#777777", linestyle="--", label=f"Prevalence ({prevalence:.3f})")
+    axes[0].set(xlabel="Recall", ylabel="Precision", xlim=(0, 1), ylim=(0, 1),
+                title="Official-test precision-recall curves")
+    axes[0].legend(frameon=False, fontsize=8)
+    confusion = comparison["models"]["random_forest"]["operating_metrics"]["confusion_matrix"]
+    matrix = np.array([[confusion["tn"], confusion["fp"]], [confusion["fn"], confusion["tp"]]])
+    image = axes[1].imshow(matrix, cmap="Blues")
+    for row in range(2):
+        for column in range(2):
+            axes[1].text(column, row, f"{matrix[row, column]:,}", ha="center", va="center")
+    axes[1].set(xticks=[0, 1], yticks=[0, 1], xticklabels=["Pred. normal", "Pred. failure"],
+                yticklabels=["Actual normal", "Actual failure"], title="Random Forest at threshold 0.50")
+    figure.colorbar(image, ax=axes[1], fraction=.046)
+    save(figure, output)
+
+
+def cmapss_non_regression(comparison: dict[str, Any], output: Path) -> None:
+    check = comparison["non_regression_check"]
+    baseline = check["baseline_random_forest"]
+    enhanced = check["enhanced_pipeline_random_forest"]
+    metrics = ["precision", "recall", "f1", "pr_auc"]
+    x = np.arange(len(metrics)); width = .36
+    figure, axis = plt.subplots(figsize=(8.3, 4.4))
+    axis.bar(x - width / 2, [baseline[name] for name in metrics], width, label="Baseline RF", color="#7F7F7F")
+    axis.bar(x + width / 2, [enhanced[name] for name in metrics], width,
+             label="Enhanced-pipeline RF", color="#59A14F")
+    axis.set_xticks(x, [name.replace("_", " ").upper() for name in metrics])
+    axis.set(title="C-MAPSS clean-data non-regression check", ylabel="Score", ylim=(0, 1))
+    axis.text(.5, .06, f"PASS: all |metric deltas| <= {check['tolerance']:.2f}; predictions preserved",
+              transform=axis.transAxes, ha="center", color="#2F7D62", fontsize=9)
+    axis.legend(frameon=False)
+    save(figure, output)
+
+
 def drift_figure(report: dict[str, Any], output: Path) -> None:
     values = report["feature_ks_d"]
     figure, axis = plt.subplots(figsize=(8.5, 4.4))
@@ -219,10 +289,25 @@ def shap_figure(path: Path, output: Path) -> None:
     save(figure, output)
 
 
-def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path) -> None:
+def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path,
+                  cmapss_comparison: dict[str, Any] | None = None) -> None:
     variants = normalized_variants(result)
-    lines = ["# 可复现实验结果汇总", "", "| 方法 | Precision | Recall | F1 | PR-AUC | 阈值 |",
-             "|---|---:|---:|---:|---:|---:|"]
+    lines = ["# 可复现实验结果汇总", ""]
+    if cmapss_comparison:
+        lines.extend(["## NASA C-MAPSS FD001分类比较", "",
+                      "| 方法 | Precision | Recall | F1 | PR-AUC | ROC-AUC | 阈值 |",
+                      "|---|---:|---:|---:|---:|---:|---:|"])
+        for model in cmapss_comparison["models"].values():
+            values = model["operating_metrics"]
+            lines.append("| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} |".format(
+                model["display_name"], values["precision"], values["recall"], values["f1"],
+                values["pr_auc"], values["roc_auc"], values["threshold"],
+            ))
+        check = cmapss_comparison["non_regression_check"]
+        lines.extend(["", f"- 增强流水线非回归检查：{'通过' if check['passed'] else '未通过'}；容差={check['tolerance']:.2f}。", ""])
+    lines.extend(["## 模拟社交服务器数据消融", "",
+                  "| 方法 | Precision | Recall | F1 | PR-AUC | 阈值 |",
+                  "|---|---:|---:|---:|---:|---:|"])
     for name, values in variants.items():
         lines.append("| {} | {} | {} | {:.4f} | {:.4f} | {} |".format(
             name,
@@ -243,6 +328,7 @@ def main() -> None:
     parser.add_argument("--drift", type=Path, required=True)
     parser.add_argument("--cmapss-metrics", type=Path)
     parser.add_argument("--cmapss-predictions", type=Path)
+    parser.add_argument("--cmapss-comparison", type=Path)
     parser.add_argument("--system-benchmark", type=Path)
     parser.add_argument("--shap-contributions", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -250,21 +336,27 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     result, drift = load_json(args.result), load_json(args.drift)
     architecture(args.out_dir / "fig1_enhanced_architecture")
-    drift_figure(drift, args.out_dir / "fig4_ks_drift_detection")
-    model_comparison(result, args.out_dir / "fig5_model_comparison")
-    threshold_figure(result, args.out_dir / "fig6_threshold_calibration")
-    stability_figure(result, args.out_dir / "fig7_model_stability")
+    drift_figure(drift, args.out_dir / "fig6_ks_drift_detection")
+    model_comparison(result, args.out_dir / "fig7_social_model_comparison")
+    threshold_figure(result, args.out_dir / "fig8_threshold_calibration")
+    stability_figure(result, args.out_dir / "fig9_model_stability")
+    cmapss_comparison = load_json(args.cmapss_comparison)
+    if cmapss_comparison:
+        cmapss_distribution(cmapss_comparison, args.out_dir / "fig2_cmapss_distribution")
+        cmapss_model_comparison(cmapss_comparison, args.out_dir / "fig3_cmapss_model_comparison")
+        cmapss_pr_comparison(cmapss_comparison, args.cmapss_comparison, args.out_dir / "fig4_cmapss_pr_comparison")
+        cmapss_non_regression(cmapss_comparison, args.out_dir / "fig5_cmapss_non_regression")
     cmapss = load_json(args.cmapss_metrics)
-    if cmapss:
+    if cmapss and not cmapss_comparison:
         cmapss_distribution(cmapss, args.out_dir / "fig2_cmapss_distribution")
         if args.cmapss_predictions and args.cmapss_predictions.exists():
             cmapss_validation(cmapss, args.cmapss_predictions, args.out_dir / "fig3_cmapss_validation")
     benchmark = load_json(args.system_benchmark)
     if benchmark:
-        system_figure(benchmark, args.out_dir / "fig8_system_performance")
+        system_figure(benchmark, args.out_dir / "fig10_system_performance")
     if args.shap_contributions and args.shap_contributions.exists():
-        shap_figure(args.shap_contributions, args.out_dir / "fig9_shap_explanations")
-    write_summary(result, drift, args.out_dir / "table_reproducible_results.md")
+        shap_figure(args.shap_contributions, args.out_dir / "fig11_shap_explanations")
+    write_summary(result, drift, args.out_dir / "table_reproducible_results.md", cmapss_comparison)
     manifest = {"source_files": {key: str(value) if value else None for key, value in vars(args).items() if key != "out_dir"},
                 "rule": "Figures are generated from persisted experiment artefacts; missing optional inputs skip their figures."}
     (args.out_dir / "figure_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
