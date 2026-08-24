@@ -56,6 +56,8 @@ class AnalysisHelperTests(unittest.TestCase):
         self.assertEqual(summary["confusion_matrix"], {"tn": 90, "fp": 5, "fn": 8, "tp": 13})
         self.assertAlmostEqual(summary["f1"], 0.7)
         self.assertAlmostEqual(summary["pr_auc"], 0.72)
+        self.assertEqual(summary["requested_threshold"], 0.5)
+        self.assertEqual(summary["threshold"], 0.5)
         self.assertEqual(len(threshold_curve(FakePerformance())), 2)
 
 

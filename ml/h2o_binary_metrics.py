@@ -25,6 +25,22 @@ def metric_at(performance: Any, method: str, threshold: float) -> float:
     return float(values[0][1])
 
 
+def effective_threshold(performance: Any, requested_threshold: float) -> float:
+    """Return the threshold row H2O actually uses for a requested value.
+
+    H2O evaluates metrics on a finite threshold table. A request such as 0.50
+    is therefore normally mapped to the closest observed threshold. Reporting
+    both values keeps fixed-threshold comparisons auditable.
+    """
+    table = performance._metric_json["thresholds_and_metric_scores"]
+    threshold_index = list(table.col_header).index("threshold")
+    rows = list(table.cell_values)
+    if not rows:
+        raise ValueError("H2O returned an empty threshold table")
+    row = min(rows, key=lambda item: abs(float(item[threshold_index]) - requested_threshold))
+    return float(row[threshold_index])
+
+
 def confusion_at(performance: Any, threshold: float) -> dict[str, int]:
     """Extract the four confusion counts without converting through pandas."""
     matrix = performance.confusion_matrix(thresholds=[threshold])
@@ -57,8 +73,10 @@ def threshold_curve(performance: Any, max_points: int = 250) -> list[dict[str, f
 
 def binary_summary(performance: Any, threshold: float) -> dict[str, Any]:
     """Return the metrics used in all thesis tables at one operating point."""
+    actual_threshold = effective_threshold(performance, threshold)
     return {
-        "threshold": float(threshold),
+        "threshold": actual_threshold,
+        "requested_threshold": float(threshold),
         "precision": metric_at(performance, "precision", threshold),
         "recall": metric_at(performance, "recall", threshold),
         "f1": metric_at(performance, "F1", threshold),
