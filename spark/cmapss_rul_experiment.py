@@ -59,7 +59,9 @@ def with_train_rul(frame: DataFrame, cap: float) -> DataFrame:
 
 def final_test_cycles(frame: DataFrame) -> DataFrame:
     final_cycle = F.max("cycle").over(Window.partitionBy("unit_id"))
-    return frame.filter(F.col("cycle") == final_cycle)
+    return (frame.withColumn("_final_cycle", final_cycle)
+            .filter(F.col("cycle") == F.col("_final_cycle"))
+            .drop("_final_cycle"))
 
 
 def main() -> None:
