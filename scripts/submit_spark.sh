@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+set -a
+source ./.env
+set +a
 
 # Packages are downloaded only on the first run. Pin versions in this script so
 # that the connector binary is compatible with the Spark 3.5 / Scala 2.12 image.

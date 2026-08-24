@@ -15,8 +15,13 @@ def main() -> None:
     parser.add_argument("--data", required=True, help="CSV exported from validated Parquet telemetry")
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--h2o-url", default="http://h2o:54321")
+    parser.add_argument("--start-local", action="store_true", help="start a local H2O JVM (required by the AutoDL profile)")
+    parser.add_argument("--port", type=int, default=6008)
     args = parser.parse_args()
-    h2o.connect(url=args.h2o_url)
+    if args.start_local:
+        h2o.init(port=args.port, max_mem_size="4G")
+    else:
+        h2o.connect(url=args.h2o_url)
     frame = h2o.import_file(args.data)
     frame["failure_within_30min"] = frame["failure_within_30min"].asfactor()
     train, valid, test = frame.split_frame(ratios=[.6, .2], seed=20260821)
