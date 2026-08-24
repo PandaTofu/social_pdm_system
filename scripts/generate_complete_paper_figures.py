@@ -113,19 +113,22 @@ def cmapss_validation(metrics: dict[str, Any], predictions: Path, output: Path) 
 def cmapss_model_comparison(comparison: dict[str, Any], output: Path) -> None:
     order = [name for name in ("logistic_regression", "random_forest", "gradient_boosting")
              if name in comparison["models"]]
-    metrics = ("precision", "recall", "f1", "pr_auc")
-    x = np.arange(len(order)); width = .19
-    figure, axis = plt.subplots(figsize=(9.4, 4.7))
-    for index, metric in enumerate(metrics):
+    metrics = (("f1", "F1"), ("recall", "Recall"),
+               ("precision", "Precision"), ("pr_auc", "PR-AUC"))
+    labels = [comparison["models"][name]["display_name"] for name in order]
+    colors = ["#4C78A8", "#59A14F", "#E45756"][:len(order)]
+    figure, axes = plt.subplots(2, 2, figsize=(10.2, 7.2), sharey=True)
+    for axis, (metric, title) in zip(axes.flat, metrics):
         values = [comparison["models"][name]["operating_metrics"][metric] for name in order]
-        bars = axis.bar(x + (index - 1.5) * width, values, width,
-                        label=metric.replace("_", " ").upper())
+        bars = axis.bar(labels, values, color=colors, width=.62)
         axis.bar_label(bars, labels=[f"{value:.3f}" for value in values],
-                       padding=2, fontsize=7, rotation=90)
-    axis.set_xticks(x, [comparison["models"][name]["display_name"] for name in order])
-    axis.set(title=f"C-MAPSS {comparison['subset']} model comparison",
-             ylabel="Official-test score", ylim=(0, 1.06))
-    axis.legend(frameon=False, ncol=4)
+                       padding=3, fontsize=9)
+        axis.set(title=title, ylim=(0, 1.05))
+        axis.tick_params(axis="x", labelrotation=12)
+        axis.grid(axis="y", alpha=.2)
+    axes[0, 0].set_ylabel("Official-test score")
+    axes[1, 0].set_ylabel("Official-test score")
+    figure.suptitle(f"C-MAPSS {comparison['subset']}: algorithms compared within each metric")
     save(figure, output)
 
 
