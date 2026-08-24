@@ -125,3 +125,33 @@ H2O 是可选的离线模型训练组件，仍主要使用 CPU。先将 validate
 > The AutoDL deployment is a single-node, Docker-free PySpark Structured Streaming prototype using accelerated file replay. It evaluates schema validation, data-quality isolation, prediction and concept-drift monitoring. It does not constitute a benchmark of Kafka, NiFi, MongoDB, Kubernetes, or horizontal autoscaling.
 
 CMAPSS 仍用于方法正确性；模拟后端遥测仍用于领域实用性。E2 在此环境只报告 batch duration、文件摄入率、CPU/memory 与 P95/P99 processing latency，不报告 Kafka lag 或 executor 扩缩容。
+
+## 6. 运行完整论文实验并生成全部图表
+
+准备好`data/development.ndjson`与`data/CMAPSSData`后执行：
+
+```bash
+cd /root/autodl-tmp/social_pdm_system
+export PDM_ENV=/root/autodl-tmp/envs/social-pdm
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export PATH="$PDM_ENV/bin:$JAVA_HOME/bin:$PATH"
+
+git pull --ff-only
+python -m pip install -r autodl/requirements-autodl.txt
+bash autodl/run_complete_paper_experiment.sh
+```
+
+完整入口依次运行C-MAPSS分类验证、KS漂移检测、静态/重训/加权/完整方法消融、逐日稳定性、单节点Spark规模实验、TreeSHAP解释和统一绘图。实验数据保存在`data/autodl_runtime/paper_run`，图片保存在`reports/generated`。
+
+如果服务器无法连接GitHub，继续使用第1节的Git bundle更新方法。
+
+## 7. 启动最小业务Dashboard
+
+完整实验结束后执行：
+
+```bash
+export PDM_RUNTIME=/root/autodl-tmp/social_pdm_system/data/autodl_runtime/paper_run
+python -m flask --app apps.dashboard run --host 0.0.0.0 --port 8090
+```
+
+Dashboard只读取实际Spark、漂移、模型和SHAP文件。没有生成的指标会显示为不可用，不会用演示数字代替。通过AutoDL自定义服务或SSH端口转发访问8090端口。

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Social PDM Operations Dashboard</title>
+  <style>
+    :root { color-scheme: light; --ink:#17212b; --muted:#667481; --line:#dbe3e8; --blue:#316b8f; --green:#2f7d62; --red:#b84d4d; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f4f7f9; color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { padding:24px max(24px,5vw); color:white; background:linear-gradient(120deg,#173b52,#2b6f78); }
+    header h1 { margin:0 0 5px; font-size:26px; }
+    header p { margin:0; opacity:.8; }
+    main { max-width:1200px; margin:24px auto; padding:0 20px 40px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+    .card, section { background:white; border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 9px #1836460d; }
+    .card { padding:16px; }
+    .label { color:var(--muted); font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+    .value { margin-top:5px; font-size:25px; font-weight:700; }
+    section { margin-top:18px; padding:18px; overflow:auto; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    table { width:100%; border-collapse:collapse; min-width:720px; }
+    th,td { padding:10px 9px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-size:12px; text-transform:uppercase; }
+    .ok { color:var(--green); } .warn { color:var(--red); }
+    .pill { display:inline-block; margin:2px 5px 2px 0; padding:2px 7px; border-radius:20px; background:#eaf1f5; font-size:12px; }
+    #notice { margin-top:14px; color:var(--muted); }
+  </style>
+</head>
+<body>
+<header><h1>Social PDM Operations Dashboard</h1><p>Read-only evidence view: Spark quality, drift, adaptive model and TreeSHAP alerts</p></header>
+<main>
+  <div class="grid">
+    <div class="card"><div class="label">Latest batch</div><div class="value" id="batch">-</div></div>
+    <div class="card"><div class="label">Processing rate</div><div class="value" id="rate">-</div></div>
+    <div class="card"><div class="label">KS max D</div><div class="value" id="drift">-</div></div>
+    <div class="card"><div class="label">Adaptive F1</div><div class="value" id="f1">-</div></div>
+    <div class="card"><div class="label">Operating threshold</div><div class="value" id="threshold">-</div></div>
+  </div>
+  <div id="notice">Loading persisted experiment artefacts...</div>
+  <section><h2>Model variants</h2><table><thead><tr><th>Variant</th><th>Precision</th><th>Recall</th><th>F1</th><th>PR-AUC</th><th>Threshold</th></tr></thead><tbody id="variants"></tbody></table></section>
+  <section><h2>Explained alerts</h2><table><thead><tr><th>Event</th><th>Time</th><th>Server</th><th>Failure probability</th><th>Top TreeSHAP contributors</th></tr></thead><tbody id="alerts"></tbody></table></section>
+</main>
+<script>
+const fmt=(value,digits=3)=>value===null||value===undefined?"-":Number(value).toFixed(digits);
+fetch("/api/status").then(r=>r.json()).then(data=>{
+  const stream=data.stream||{}, drift=data.drift||{}, variants=(data.model||{}).variants||{};
+  document.querySelector("#batch").textContent=stream.batch_id??"-";
+  document.querySelector("#rate").textContent=stream.processing_rows_per_second?Math.round(stream.processing_rows_per_second).toLocaleString()+" r/s":"-";
+  document.querySelector("#drift").textContent=fmt(drift.max_ks_d);
+  document.querySelector("#f1").textContent=fmt((variants.full_adaptive||{}).f1);
+  document.querySelector("#threshold").textContent=fmt((data.model||{}).threshold);
+  document.querySelector("#notice").textContent="Availability: "+Object.entries(data.availability).map(([k,v])=>`${k}=${v}`).join(" | ");
+  const body=document.querySelector("#variants");
+  Object.entries(variants).forEach(([name,m])=>body.insertAdjacentHTML("beforeend",`<tr><td>${name}</td><td>${fmt(m.precision)}</td><td>${fmt(m.recall)}</td><td>${fmt(m.f1)}</td><td>${fmt(m.pr_auc)}</td><td>${fmt(m.threshold)}</td></tr>`));
+  const alerts=document.querySelector("#alerts");
+  data.alerts.forEach(a=>alerts.insertAdjacentHTML("beforeend",`<tr><td>${a.event_id}</td><td>${a.event_time}</td><td>${a.server_id}</td><td>${fmt(a.probability)}</td><td>${a.top_contributors.map(x=>`<span class="pill">${x.feature}: ${fmt(x.value)}</span>`).join("")}</td></tr>`));
+}).catch(error=>document.querySelector("#notice").textContent="Dashboard data unavailable: "+error);
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from h2o.estimators.random_forest import H2ORandomForestEstimator
 from pyspark import StorageLevel
 from pyspark.sql import DataFrame, SparkSession, functions as F
 from pyspark.sql.window import Window
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from ml.h2o_binary_metrics import binary_summary, threshold_curve
 
 SETTINGS = [f"setting_{i}" for i in range(1, 4)]
 SENSORS = [f"sensor_{i}" for i in range(1, 22)]
@@ -54,7 +61,8 @@ def read_rul(spark: SparkSession, path: Path) -> DataFrame:
 def label_train(frame: DataFrame, horizon: int) -> DataFrame:
     terminal = F.max("cycle").over(Window.partitionBy("unit_id"))
     return (frame.withColumn("_terminal_cycle", terminal)
-            .withColumn(TARGET, (F.col("_terminal_cycle") - F.col("cycle") <= horizon).cast("int"))
+            .withColumn("actual_rul", F.col("_terminal_cycle") - F.col("cycle"))
+            .withColumn(TARGET, (F.col("actual_rul") <= horizon).cast("int"))
             .drop("_terminal_cycle"))
 
 
@@ -64,7 +72,7 @@ def label_test(frame: DataFrame, rul: DataFrame, horizon: int) -> DataFrame:
     return (with_terminal.join(F.broadcast(rul), "unit_id", "inner")
             .withColumn("actual_rul", F.col("rul_at_final_cycle") + F.col("_terminal_cycle") - F.col("cycle"))
             .withColumn(TARGET, (F.col("actual_rul") <= horizon).cast("int"))
-            .drop("_terminal_cycle", "rul_at_final_cycle", "actual_rul"))
+            .drop("_terminal_cycle", "rul_at_final_cycle"))
 
 
 def write_csv(frame: DataFrame, destination: Path) -> Path:
@@ -72,9 +80,29 @@ def write_csv(frame: DataFrame, destination: Path) -> Path:
     return next(destination.glob("part-*.csv"))
 
 
-def metric(performance, method: str) -> float:
-    value = getattr(performance, method)(thresholds=[0.5])
-    return float(value[0][1])
+def distribution(frame: DataFrame) -> dict[str, object]:
+    """Collect only compact label/RUL bins, never trajectory rows."""
+    summary = frame.agg(
+        F.count("*").alias("rows"),
+        F.sum(F.col(TARGET)).alias("positive_rows"),
+        F.countDistinct("unit_id").alias("engines"),
+    ).first().asDict()
+    buckets = (frame.withColumn(
+        "rul_band",
+        F.when(F.col("actual_rul") <= 30, "0-30")
+        .when(F.col("actual_rul") <= 60, "31-60")
+        .when(F.col("actual_rul") <= 120, "61-120")
+        .otherwise("121+"),
+    ).groupBy("rul_band").count().collect())
+    rows = int(summary["rows"])
+    positives = int(summary["positive_rows"] or 0)
+    return {
+        "rows": rows,
+        "engines": int(summary["engines"]),
+        "positive_rows": positives,
+        "positive_rate": positives / rows if rows else 0.0,
+        "rul_bands": {row["rul_band"]: int(row["count"]) for row in buckets},
+    }
 
 
 def main() -> None:
@@ -96,7 +124,8 @@ def main() -> None:
                           read_rul(spark, args.data_dir / f"RUL_{args.subset}.txt"), args.horizon)
         train = train.persist(StorageLevel.MEMORY_AND_DISK)
         test = test.persist(StorageLevel.MEMORY_AND_DISK)
-        train_rows, test_rows = train.count(), test.count()
+        train_distribution, test_distribution = distribution(train), distribution(test)
+        train_rows, test_rows = train_distribution["rows"], test_distribution["rows"]
         train_csv = write_csv(train, prepared / "train")
         test_csv = write_csv(test, prepared / "test")
     finally:
@@ -115,11 +144,16 @@ def main() -> None:
         output.mkdir(parents=True, exist_ok=True)
         predictions = model.predict(test_h2o)
         h2o.download_csv(predictions.cbind(test_h2o[TARGET]), str(output / "predictions.csv"))
+        operating_metrics = binary_summary(performance, 0.5)
         report = {
             "subset": args.subset, "task": f"failure within {args.horizon} cycles", "model": "H2O Random Forest",
             "cross_validation_folds": 10, "trees": args.trees, "train_rows": train_rows, "test_rows": test_rows,
-            "f1_at_0_5": metric(performance, "F1"), "precision_at_0_5": metric(performance, "precision"),
-            "recall_at_0_5": metric(performance, "recall"), "auc": float(performance.auc()),
+            "train_distribution": train_distribution, "test_distribution": test_distribution,
+            "operating_metrics": operating_metrics,
+            # Backward-compatible scalar fields retained for existing notebooks.
+            "f1_at_0_5": operating_metrics["f1"], "precision_at_0_5": operating_metrics["precision"],
+            "recall_at_0_5": operating_metrics["recall"], "auc": operating_metrics["roc_auc"],
+            "aucpr": operating_metrics["pr_auc"], "threshold_curve": threshold_curve(performance),
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
         (output / "metrics.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

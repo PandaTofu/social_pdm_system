@@ -4,6 +4,7 @@
 *.key
 
 # Reproducible generated data and experiment artefacts
+data/
 data/*.ndjson
 data/*.parquet
 data/*.csv
@@ -14,12 +15,18 @@ logs/
 raw_runs.csv
 
 # Python and Spark local state
+.venv*/
+.uv-cache*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 checkpoints/
 metrics/
 spark-events/
+
+# Generated paper and dashboard artefacts
+reports/generated/
+data/local_runtime/
 
 # OS/editor files
 .DS_Store

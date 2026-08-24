@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from spark.streaming_job import SCHEMA, classify
+from ml.h2o_binary_metrics import binary_summary, threshold_curve
 
 FEATURES = ["cpu_util_pct", "memory_util_pct", "disk_util_pct", "disk_iops", "disk_queue_depth",
             "network_in_mbps", "network_out_mbps", "request_rate_rps", "response_p50_ms",
@@ -39,7 +40,11 @@ def spark_session() -> SparkSession:
 
 def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
                add_recency_weight: bool = False) -> tuple[Path, int, int]:
-    selected = frame.select(*FEATURES, TARGET, "day").dropna()
+    # Context columns are excluded from model features but retained so sampled
+    # alerts can be traced back to a logical server and event time.
+    selected = frame.select("event_id", "event_time", "server_id", *FEATURES, TARGET, "day").dropna(
+        subset=FEATURES + [TARGET]
+    )
     if balance_sample:
         # Keep every scarce positive row; sample only negatives before H2O's
         # class balancing. This bounds local AutoDL memory without changing time order.
@@ -48,7 +53,6 @@ def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
         # Drift-era labels are deliberately four times as influential as the
         # legacy regime.  This is an explicit, reproducible recency policy.
         selected = selected.withColumn("sample_weight", F.when(F.col("day") == 5, F.lit(4.0)).otherwise(F.lit(1.0)))
-    selected = selected.drop("day")
     selected = selected.persist(StorageLevel.MEMORY_AND_DISK)
     try:
         total = selected.count()
@@ -59,18 +63,14 @@ def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
     return next(path.glob("part-*.csv")), total, positives
 
 
-def f1_at_threshold(performance, threshold: float) -> float:
-    return float(performance.F1(thresholds=[threshold])[0][1])
-
-
 def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
     frame = h2o.import_file(str(csv_path))
     frame[TARGET] = frame[TARGET].asfactor()
     model = H2ORandomForestEstimator(ntrees=trees, max_depth=20, min_rows=5,
-                                     # H2O disallows balance_classes together
-                                     # with observation weights.  The Spark
-                                     # export has already downsampled negatives.
-                                     balance_classes=not use_recency_weight, seed=20260824)
+                                     # Keep class handling identical across all
+                                     # ablations. Spark already applies the same
+                                     # deterministic negative downsampling.
+                                     balance_classes=False, seed=20260824)
     model.train(x=FEATURES, y=TARGET, training_frame=frame,
                 weights_column="sample_weight" if use_recency_weight else None)
     return model
@@ -81,6 +81,50 @@ def select_f1_threshold(performance) -> tuple[float, float]:
     return float(threshold), float(score)
 
 
+def write_explanations(model, evaluation_frame, threshold: float, output_dir: Path,
+                       max_rows: int) -> dict[str, object]:
+    """Persist real H2O TreeSHAP contributions for predicted alerts.
+
+    Explanation support differs across H2O model builds.  An unsupported build
+    is recorded explicitly instead of failing the accuracy experiment or
+    fabricating an explanation.
+    """
+    try:
+        predictions = model.predict(evaluation_frame)
+        alert_mask = predictions["p1"] >= threshold
+        alert_rows = evaluation_frame[alert_mask, :]
+        alert_predictions = predictions[alert_mask, :]
+        selected_rows = min(int(alert_rows.nrows), max_rows)
+        if selected_rows == 0:
+            return {"status": "no_alerts", "rows": 0}
+        sample = alert_rows[0:selected_rows, :]
+        contributions = model.predict_contributions(sample)
+        context_columns = [name for name in ("event_id", "event_time", "server_id", TARGET)
+                           if name in sample.columns]
+        combined = sample[context_columns].cbind(alert_predictions[0:selected_rows, :]).cbind(contributions)
+        destination = output_dir / "shap_alert_explanations.csv"
+        h2o.download_csv(combined, str(destination))
+        return {"status": "generated", "rows": selected_rows, "path": str(destination)}
+    except Exception as error:  # H2O DRF SHAP availability is runtime/version dependent.
+        return {"status": "unsupported", "rows": 0, "error": f"{type(error).__name__}: {error}"}
+
+
+def stability_by_day(static_model, adaptive_model, evaluation_frame, adaptive_threshold: float) -> list[dict[str, object]]:
+    """Measure post-drift performance without claiming a six-month simulation."""
+    rows: list[dict[str, object]] = []
+    for day in (6, 7):
+        daily = evaluation_frame[evaluation_frame["day"] == day, :]
+        if int(daily.nrows) == 0:
+            continue
+        rows.append({
+            "day": day,
+            "rows": int(daily.nrows),
+            "static": binary_summary(static_model.model_performance(daily), 0.5),
+            "full_adaptive": binary_summary(adaptive_model.model_performance(daily), adaptive_threshold),
+        })
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Static versus KS-triggered adaptive telemetry comparison.")
     parser.add_argument("--source", type=Path, required=True)
@@ -88,6 +132,9 @@ def main() -> None:
     parser.add_argument("--drift-report", type=Path, required=True,
                         help="JSON output created by ml/drift_monitor.py")
     parser.add_argument("--trees", type=int, default=80)
+    parser.add_argument("--explain-rows", type=int, default=500)
+    parser.add_argument("--skip-ablation", action="store_true",
+                        help="Skip the unweighted retraining model for a shorter smoke run")
     args = parser.parse_args()
     started = time.perf_counter()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -119,25 +166,46 @@ def main() -> None:
         static_model = train_h2o(pre_csv, args.trees)
         evaluation_frame = h2o.import_file(str(eval_csv))
         static_performance = static_model.model_performance(evaluation_frame)
+        retrained_model = None
+        retrained_performance = None
+        if drift_detected and not args.skip_ablation:
+            retrained_model = train_h2o(adaptive_csv, args.trees, use_recency_weight=False)
+            retrained_performance = retrained_model.model_performance(evaluation_frame)
         adaptive_model = train_h2o(adaptive_csv, args.trees, use_recency_weight=drift_detected)
-        adaptive_performance = adaptive_model.model_performance(h2o.import_file(str(eval_csv)))
+        adaptive_performance = adaptive_model.model_performance(evaluation_frame)
         calibration_performance = adaptive_model.model_performance(h2o.import_file(str(calibration_csv)))
         adaptive_threshold, calibration_f1 = select_f1_threshold(calibration_performance)
+        variants = {
+            "static_rf": binary_summary(static_performance, 0.5),
+            "weighted_retraining": binary_summary(adaptive_performance, 0.5),
+            "full_adaptive": binary_summary(adaptive_performance, adaptive_threshold),
+        }
+        if retrained_performance is not None:
+            variants["unweighted_retraining"] = binary_summary(retrained_performance, 0.5)
+        explanations = write_explanations(
+            adaptive_model, evaluation_frame, adaptive_threshold, args.output_dir, args.explain_rows
+        )
+        stability = stability_by_day(static_model, adaptive_model, evaluation_frame, adaptive_threshold)
         report = {
             "protocol": "train days 1-3; KS-detected day-5 feedback split 70/30 for recency-weighted retraining/threshold calibration; evaluate days 6-7",
+            "class_balance_policy": "keep all positives and deterministically sample 8% of training negatives; H2O balance_classes disabled for every variant",
             "drift_detected": drift_detected, "retrain_triggered": drift_detected,
             "drift_monitor": drift_report, "trees": args.trees,
             "pre_drift_train": {"rows": pre_rows, "positive_rows": pre_positive},
             "adaptive_train": {"rows": adaptive_rows, "positive_rows": adaptive_positive},
             "feedback_calibration": {"rows": calibration_rows, "positive_rows": calibration_positive},
             "evaluation": {"rows": eval_rows, "positive_rows": eval_positive},
-            "static_f1_at_0_5": f1_at_threshold(static_performance, 0.5),
-            "adaptive_f1_at_0_5": f1_at_threshold(adaptive_performance, 0.5),
+            "variants": variants,
+            "static_f1_at_0_5": variants["static_rf"]["f1"],
+            "adaptive_f1_at_0_5": variants["weighted_retraining"]["f1"],
             "adaptive_operating_threshold": adaptive_threshold,
             "adaptive_calibration_f1": calibration_f1,
-            "adaptive_f1_at_calibrated_threshold": f1_at_threshold(adaptive_performance, adaptive_threshold),
+            "adaptive_f1_at_calibrated_threshold": variants["full_adaptive"]["f1"],
             "static_aucpr": float(static_performance.aucpr()),
             "adaptive_aucpr": float(adaptive_performance.aucpr()),
+            "adaptive_threshold_curve": threshold_curve(adaptive_performance),
+            "post_drift_daily_stability": stability,
+            "shap_explanations": explanations,
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
         report["f1_change_at_0_5"] = report["adaptive_f1_at_0_5"] - report["static_f1_at_0_5"]

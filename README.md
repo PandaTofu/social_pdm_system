@@ -1,6 +1,6 @@
 # Social PDM Spark prototype
 
-本目录是论文架构的可部署原型，不替代论文中对真实集群实验的说明。详细设计见 [详细系统设计.md](详细系统设计.md)。
+本目录是论文架构的可部署原型，不替代论文中对真实集群实验的说明。最新代码结构、指标契约、图表来源和完整实验命令见 [系统代码结构与实验设计.md](系统代码结构与实验设计.md)；早期组件设计见 [详细系统设计.md](详细系统设计.md)。
 
 ## 两种部署 Profile
 
@@ -10,6 +10,23 @@
 | AutoDL 无 Docker | AutoDL 普通容器 | JSON 文件流、PySpark `local[*]`、Parquet、KS/H2O | E1、E3、单节点加速回放；不证明 Kafka/K8s 性能 |
 
 AutoDL 用户请直接阅读 [AutoDL部署指南.md](AutoDL部署指南.md)，不要在 AutoDL 容器内部安装 Docker。
+
+## 论文完整实验
+
+在AutoDL准备好Java 17、Python依赖、`data/development.ndjson`和`data/CMAPSSData`后运行：
+
+```bash
+bash autodl/run_complete_paper_experiment.sh
+```
+
+脚本依次完成漂移检测、C-MAPSS验证、自适应/消融实验、单节点Spark性能实验和统一绘图。输出位于`data/autodl_runtime/paper_run`及`reports/generated`。所有图只读取真实实验产物。
+
+实验完成后可启动最小业务Dashboard：
+
+```bash
+PDM_RUNTIME=data/autodl_runtime/paper_run \
+python -m flask --app apps.dashboard run --host 0.0.0.0 --port 8090
+```
 
 ## 快速启动（Linux）
 
