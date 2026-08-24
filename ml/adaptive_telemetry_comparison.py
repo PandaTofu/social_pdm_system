@@ -67,7 +67,10 @@ def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
     frame = h2o.import_file(str(csv_path))
     frame[TARGET] = frame[TARGET].asfactor()
     model = H2ORandomForestEstimator(ntrees=trees, max_depth=20, min_rows=5,
-                                     balance_classes=True, seed=20260824)
+                                     # H2O disallows balance_classes together
+                                     # with observation weights.  The Spark
+                                     # export has already downsampled negatives.
+                                     balance_classes=not use_recency_weight, seed=20260824)
     model.train(x=FEATURES, y=TARGET, training_frame=frame,
                 weights_column="sample_weight" if use_recency_weight else None)
     return model
