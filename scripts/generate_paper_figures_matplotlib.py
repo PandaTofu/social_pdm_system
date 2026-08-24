@@ -68,13 +68,13 @@ def architecture_chart(stem: Path) -> None:
     axis.set_axis_off()
     labels = ["Telemetry\ningestion", "Spark quality\nvalidation + dedupe", "KS drift\nmonitoring",
               "Feedback-weighted\nH2O RF retraining", "Calibrated\nalerts"]
-    positions = [.03, .24, .47, .69, .90]
+    positions = [.02, .22, .42, .62, .82]
     for x, label in zip(positions, labels):
         axis.add_patch(FancyBboxPatch((x, .34), .15, .32, boxstyle="round,pad=.018",
                                       facecolor="#E8F1FA", edgecolor="#4C78A8", linewidth=1.3))
         axis.text(x + .075, .50, label, ha="center", va="center", fontsize=10)
-    for x in positions[:-1]:
-        axis.annotate("", xy=(x + .205, .50), xytext=(x + .155, .50),
+    for current, following in zip(positions, positions[1:]):
+        axis.annotate("", xy=(following - .01, .50), xytext=(current + .155, .50),
                       arrowprops={"arrowstyle": "->", "color": "#4C78A8", "lw": 1.5})
     axis.text(.56, .16, "Drift detected: delayed feedback drives retraining and threshold calibration",
               ha="center", fontsize=9)
