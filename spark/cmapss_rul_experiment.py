@@ -14,13 +14,13 @@ from pathlib import Path
 
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import StandardScaler, VectorAssembler
-from pyspark.ml.regression import LinearRegression
+from pyspark.ml.regression import GBTRegressor, LinearRegression
 from pyspark.sql import DataFrame, SparkSession, functions as F
 from pyspark.sql.window import Window
 
 SETTING_COLUMNS = [f"setting_{index}" for index in range(1, 4)]
 SENSOR_COLUMNS = [f"sensor_{index}" for index in range(1, 22)]
-FEATURE_COLUMNS = SETTING_COLUMNS + SENSOR_COLUMNS
+FEATURE_COLUMNS = ["cycle"] + SETTING_COLUMNS + SENSOR_COLUMNS
 ALL_COLUMNS = ["unit_id", "cycle"] + FEATURE_COLUMNS
 
 
@@ -64,12 +64,26 @@ def final_test_cycles(frame: DataFrame) -> DataFrame:
             .drop("_final_cycle"))
 
 
+def build_model(model_name: str) -> Pipeline:
+    """Keep preprocessing identical where relevant and use Spark-native models."""
+    assembler = VectorAssembler(inputCols=FEATURE_COLUMNS, outputCol="features_raw", handleInvalid="error")
+    if model_name == "linear":
+        scaler = StandardScaler(inputCol="features_raw", outputCol="features", withMean=True, withStd=True)
+        regression = LinearRegression(featuresCol="features", labelCol="label", predictionCol="prediction",
+                                      regParam=0.1, elasticNetParam=0.0, maxIter=100)
+        return Pipeline(stages=[assembler, scaler, regression])
+    gbt = GBTRegressor(featuresCol="features_raw", labelCol="label", predictionCol="prediction",
+                       maxIter=80, maxDepth=5, stepSize=0.05, maxBins=32, seed=20260824)
+    return Pipeline(stages=[assembler, gbt])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a PySpark C-MAPSS RUL baseline.")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--subset", choices=["FD001", "FD002", "FD003", "FD004"], default="FD001")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--rul-cap", type=float, default=125.0)
+    parser.add_argument("--model", choices=["linear", "gbt"], default="linear")
     args = parser.parse_args()
 
     started = time.perf_counter()
@@ -83,18 +97,15 @@ def main() -> None:
         if final_test_cycles(test).select("unit_id").distinct().count() != labels.count():
             raise ValueError("The test-engine count does not match the official RUL label count")
 
-        assembler = VectorAssembler(inputCols=FEATURE_COLUMNS, outputCol="features_raw", handleInvalid="error")
-        scaler = StandardScaler(inputCol="features_raw", outputCol="features", withMean=True, withStd=True)
-        regression = LinearRegression(featuresCol="features", labelCol="label", predictionCol="prediction",
-                                      regParam=0.1, elasticNetParam=0.0, maxIter=100)
-        model = Pipeline(stages=[assembler, scaler, regression]).fit(train)
+        model = build_model(args.model).fit(train)
 
         scored = (model.transform(final_test_cycles(test))
                   .select("unit_id", F.greatest(F.lit(0.0), F.col("prediction")).alias("predicted_rul")))
         result = (scored.join(F.broadcast(labels), "unit_id", "inner")
                   .withColumn("error", F.col("predicted_rul") - F.col("actual_rul"))
                   .withColumn("absolute_error", F.abs("error")))
-        result.write.mode("overwrite").parquet(str(args.output_dir / args.subset / "predictions"))
+        output = args.output_dir / args.subset / args.model
+        result.write.mode("overwrite").parquet(str(output / "predictions"))
 
         actual_mean = result.agg(F.avg("actual_rul").alias("actual_mean")).first()["actual_mean"]
         stats = result.agg(
@@ -106,11 +117,10 @@ def main() -> None:
             (F.lit(1.0) - F.sum(F.pow("error", 2)) /
              F.sum(F.pow(F.col("actual_rul") - F.lit(actual_mean), 2))).alias("r2"),
         ).first().asDict()
-        stats.update({"subset": args.subset, "rul_cap": args.rul_cap,
+        stats.update({"subset": args.subset, "model": args.model, "rul_cap": args.rul_cap,
                       "train_rows": train.count(), "duration_seconds": round(time.perf_counter() - started, 3)})
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / args.subset / "metrics.json").parent.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / args.subset / "metrics.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "metrics.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
         print(json.dumps(stats, indent=2))
     finally:
         spark.stop()
