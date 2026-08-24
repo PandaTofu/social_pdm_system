@@ -32,6 +32,37 @@ java -version
 spark-submit --version
 ```
 
+### GitHub 无法访问时：使用 Git bundle（推荐备用方案）
+
+若服务器可以 SSH 登录、但 `git clone` 无法连接 GitHub，可在本地已同步代码的电脑执行：
+
+```powershell
+git -C D:\Work\2608月订单\Spark论文修改\social_pdm_system bundle create social_pdm_system.bundle main
+scp -P <SSH端口> social_pdm_system.bundle root@<服务器地址>:/root/
+```
+
+然后在服务器执行（不要直接 `git clone bundle`，以免默认分支未被检出）：
+
+```bash
+cd /root/autodl-tmp
+mkdir -p social_pdm_system && cd social_pdm_system
+git init
+git fetch /root/social_pdm_system.bundle main
+git checkout -B main FETCH_HEAD
+git remote add origin https://github.com/PandaTofu/social_pdm_system.git
+```
+
+后续更新时，在本地重新生成 bundle 并上传，再在服务器仓库运行
+`git fetch /root/social_pdm_system.bundle main && git merge --ff-only FETCH_HEAD`。这样不依赖服务器能够访问 GitHub。
+
+若默认 Conda channel 不可访问，可为项目创建路径环境（示例使用清华镜像）：
+
+```bash
+/root/miniconda3/bin/conda create -p /root/autodl-tmp/envs/social-pdm python=3.11 -y \
+  --override-channels -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+export PATH="/root/autodl-tmp/envs/social-pdm/bin:$PATH"
+```
+
 如果 `conda` 不存在，使用现有 Python 虚拟环境；但仍需要 Java 17。不要使用 `sudo apt install docker`，当前容器并没有运行 Docker daemon 所需权限。
 
 ## 2. 启动开发实验
