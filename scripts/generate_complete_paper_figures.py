@@ -118,10 +118,13 @@ def cmapss_model_comparison(comparison: dict[str, Any], output: Path) -> None:
     figure, axis = plt.subplots(figsize=(9.4, 4.7))
     for index, metric in enumerate(metrics):
         values = [comparison["models"][name]["operating_metrics"][metric] for name in order]
-        axis.bar(x + (index - 1.5) * width, values, width, label=metric.replace("_", " ").upper())
+        bars = axis.bar(x + (index - 1.5) * width, values, width,
+                        label=metric.replace("_", " ").upper())
+        axis.bar_label(bars, labels=[f"{value:.3f}" for value in values],
+                       padding=2, fontsize=7, rotation=90)
     axis.set_xticks(x, [comparison["models"][name]["display_name"] for name in order])
     axis.set(title=f"C-MAPSS {comparison['subset']} model comparison",
-             ylabel="Official-test score", ylim=(0, 1))
+             ylabel="Official-test score", ylim=(0, 1.06))
     axis.legend(frameon=False, ncol=4)
     save(figure, output)
 
@@ -151,13 +154,16 @@ def cmapss_pr_comparison(comparison: dict[str, Any], comparison_path: Path, outp
                 title="Official-test precision-recall curves")
     axes[0].legend(frameon=False, fontsize=8)
     confusion = comparison["models"]["random_forest"]["operating_metrics"]["confusion_matrix"]
+    rf_metrics = comparison["models"]["random_forest"]["operating_metrics"]
     matrix = np.array([[confusion["tn"], confusion["fp"]], [confusion["fn"], confusion["tp"]]])
     image = axes[1].imshow(matrix, cmap="Blues")
     for row in range(2):
         for column in range(2):
             axes[1].text(column, row, f"{matrix[row, column]:,}", ha="center", va="center")
     axes[1].set(xticks=[0, 1], yticks=[0, 1], xticklabels=["Pred. normal", "Pred. failure"],
-                yticklabels=["Actual normal", "Actual failure"], title="Random Forest at threshold 0.50")
+                yticklabels=["Actual normal", "Actual failure"],
+                title=(f"Random Forest: requested {rf_metrics.get('requested_threshold', 0.5):.2f}, "
+                       f"effective {rf_metrics['threshold']:.3f}"))
     figure.colorbar(image, ax=axes[1], fraction=.046)
     save(figure, output)
 
@@ -295,13 +301,14 @@ def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path,
     lines = ["# 可复现实验结果汇总", ""]
     if cmapss_comparison:
         lines.extend(["## NASA C-MAPSS FD001分类比较", "",
-                      "| 方法 | Precision | Recall | F1 | PR-AUC | ROC-AUC | 阈值 |",
-                      "|---|---:|---:|---:|---:|---:|---:|"])
+                      "| 方法 | Precision | Recall | F1 | PR-AUC | ROC-AUC | 请求阈值 | 实际阈值 |",
+                      "|---|---:|---:|---:|---:|---:|---:|---:|"])
         for model in cmapss_comparison["models"].values():
             values = model["operating_metrics"]
-            lines.append("| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} |".format(
+            lines.append("| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} | {:.4f} |".format(
                 model["display_name"], values["precision"], values["recall"], values["f1"],
-                values["pr_auc"], values["roc_auc"], values["threshold"],
+                values["pr_auc"], values["roc_auc"], values.get("requested_threshold", values["threshold"]),
+                values["threshold"],
             ))
         check = cmapss_comparison["non_regression_check"]
         lines.extend(["", f"- 增强流水线非回归检查：{'通过' if check['passed'] else '未通过'}；容差={check['tolerance']:.2f}。", ""])
