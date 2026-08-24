@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="255" viewBox="0 0 1080 255">
+<style>text{font-family:Arial,sans-serif;fill:#1f2937}.title{font-size:20px;font-weight:bold}.label{font-size:14px}.small{font-size:12px}.axis{stroke:#374151;stroke-width:1}.grid{stroke:#d1d5db;stroke-width:1}.box{fill:#e8f1fa;stroke:#4c78a8;stroke-width:1.5}</style>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#4c78a8"/></marker></defs>
+<rect x="30" y="85" width="150" height="90" rx="8" class="box"/>
+<text x="105" y="122" text-anchor="middle" class="label">Telemetry</text>
+<text x="105" y="142" text-anchor="middle" class="label">ingestion</text>
+<rect x="240" y="85" width="150" height="90" rx="8" class="box"/>
+<text x="315" y="122" text-anchor="middle" class="label">Spark quality</text>
+<text x="315" y="142" text-anchor="middle" class="label">validation + dedupe</text>
+<rect x="470" y="85" width="150" height="90" rx="8" class="box"/>
+<text x="545" y="122" text-anchor="middle" class="label">KS drift</text>
+<text x="545" y="142" text-anchor="middle" class="label">monitoring</text>
+<rect x="690" y="85" width="150" height="90" rx="8" class="box"/>
+<text x="765" y="122" text-anchor="middle" class="label">Feedback-weighted</text>
+<text x="765" y="142" text-anchor="middle" class="label">H2O RF retraining</text>
+<rect x="900" y="85" width="150" height="90" rx="8" class="box"/>
+<text x="975" y="122" text-anchor="middle" class="label">Calibrated</text>
+<text x="975" y="142" text-anchor="middle" class="label">alerts</text>
+<line x1="180" y1="130" x2="235" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="390" y1="130" x2="445" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="620" y1="130" x2="675" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="840" y1="130" x2="895" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="560" y="225" text-anchor="middle" class="label">Drift detected: use delayed day-5 feedback for retraining and threshold calibration</text>
+</svg>
