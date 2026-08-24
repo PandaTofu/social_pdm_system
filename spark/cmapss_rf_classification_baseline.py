@@ -45,7 +45,7 @@ def read_trajectory(spark: SparkSession, path: Path) -> DataFrame:
 
 
 def read_rul(spark: SparkSession, path: Path) -> DataFrame:
-    values = (spark.read.option("wholetext", True).text(str(path))
+    values = (spark.read.text(str(path), wholetext=True)
               .select(F.posexplode(F.split(F.trim("value"), r"\s+")).alias("position", "rul")))
     return values.select((F.col("position") + 1).cast("long").alias("unit_id"),
                          F.col("rul").cast("long").alias("rul_at_final_cycle"))
