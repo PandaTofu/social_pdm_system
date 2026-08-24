@@ -34,7 +34,7 @@ def build_session() -> SparkSession:
 
 def read_trajectory(spark: SparkSession, path: str) -> DataFrame:
     """Read variable-whitespace C-MAPSS text with an explicit 26-column schema."""
-    tokens = F.split(F.trim(F.col("value")), r"\\s+")
+    tokens = F.split(F.trim(F.col("value")), r"\s+")
     frame = spark.read.text(path).select(tokens.alias("tokens"))
     malformed = frame.filter(F.size("tokens") != len(ALL_COLUMNS)).count()
     if malformed:
@@ -47,7 +47,7 @@ def read_trajectory(spark: SparkSession, path: str) -> DataFrame:
 def read_test_rul(spark: SparkSession, path: str) -> DataFrame:
     """Preserve line order without a Python/RDD-side index."""
     values = (spark.read.option("wholetext", True).text(path)
-              .select(F.posexplode(F.split(F.trim(F.col("value")), r"\\s+")).alias("position", "raw_rul")))
+              .select(F.posexplode(F.split(F.trim(F.col("value")), r"\s+")).alias("position", "raw_rul")))
     return values.select((F.col("position") + 1).cast("long").alias("unit_id"),
                          F.col("raw_rul").cast("double").alias("actual_rul"))
 
