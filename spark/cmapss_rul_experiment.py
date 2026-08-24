@@ -21,7 +21,7 @@ from pyspark.sql.window import Window
 SETTING_COLUMNS = [f"setting_{index}" for index in range(1, 4)]
 SENSOR_COLUMNS = [f"sensor_{index}" for index in range(1, 22)]
 FEATURE_COLUMNS = ["cycle"] + SETTING_COLUMNS + SENSOR_COLUMNS
-ALL_COLUMNS = ["unit_id", "cycle"] + FEATURE_COLUMNS
+ALL_COLUMNS = ["unit_id", "cycle"] + SETTING_COLUMNS + SENSOR_COLUMNS
 
 
 def build_session() -> SparkSession:
