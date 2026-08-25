@@ -64,7 +64,16 @@ def analyze(report: dict[str, Any], evaluation: dict[str, Any]) -> dict[str, Any
                           "prior_multiple_vs_evaluation": rate / prevalence}
     curve = report.get("adaptive_threshold_curve", [])
     oracle = max(curve, key=lambda row: row["f1"]) if curve else None
+    config = report.get("generator_config") or {}
     return {
+        "scenario": report.get("scenario", config.get("scenario", "unspecified")),
+        "generator_contract": {
+            "failure_horizon_minutes": config.get("failure_horizon_minutes"),
+            "precursor_window_minutes": config.get("precursor_window_minutes"),
+            "windows_aligned": (config.get("failure_horizon_minutes") == config.get("precursor_window_minutes")
+                                if config else None),
+            "concept_drift_strength": config.get("concept_drift_strength"),
+        },
         "evaluation": evaluation,
         "training_and_calibration_priors": training,
         "variants": {name: variant_diagnostics(values, prevalence)
@@ -76,7 +85,9 @@ def analyze(report: dict[str, Any], evaluation: dict[str, Any]) -> dict[str, Any
 
 def markdown(result: dict[str, Any]) -> str:
     evaluation = result["evaluation"]
+    contract = result["generator_contract"]
     lines = ["# 模拟遥测数据诊断", "",
+             f"- 场景：{result['scenario']}",
              f"- 评估记录：{evaluation['rows']:,}",
              f"- 正例：{evaluation['positive_rows']:,}（{evaluation['positive_rate']:.4%}）",
              f"- 逻辑服务器：{evaluation['servers']}；评估期无正例的服务器：{evaluation['servers_without_positive_rows']}", "",
@@ -91,9 +102,15 @@ def markdown(result: dict[str, Any]) -> str:
     lines.extend(["", "## 结论", "",
                   "1. Recall高而Precision低的首要原因是正例极稀少；很小的FPR也会产生远多于TP的FP。",
                   "2. 训练集只保留8%的负例，使训练先验显著高于真实评估先验；0.5概率阈值不再适合直接部署。",
-                  "3. 生成器在故障前90分钟增强特征，但标签窗口只有30分钟；31–90分钟的负标签样本天然类似正例，会制造结构性假阳性。",
-                  "4. PR-AUC应与正例率基线一起解释；本实验PR-AUC远高于随机基线，但固定阈值下的告警负担仍偏高。",
-                  "5. 当前漂移主要是协变量漂移。若论文主张概念漂移，应让故障前后的特征—风险关系在部署后发生可控变化。", ""])
+                  ("3. 故障征兆窗口与标签窗口一致，已消除旧场景的90/30分钟结构性错配。"
+                   if contract["windows_aligned"] else
+                   "3. 故障征兆窗口与标签窗口不一致，窗口之外的相似负例会制造结构性假阳性。"),
+                  "4. PR-AUC应与正例率基线一起解释；同时报告固定阈值下的告警负担。"])
+    if result["scenario"] == "concept_drift_v2":
+        lines.append("5. 本场景在部署后切换主要风险特征；是否成功证明自适应能力，应以同阈值重训练增益和完整消融结果判断。")
+    else:
+        lines.append("5. 当前场景主要用于协变量漂移；不要将其单独作为概念漂移证据。")
+    lines.append("")
     return "\n".join(lines)
 
 

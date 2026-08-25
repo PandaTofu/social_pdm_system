@@ -145,6 +145,24 @@ bash autodl/run_complete_paper_experiment.sh
 
 如果服务器无法连接GitHub，继续使用第1节的Git bundle更新方法。
 
+### 运行独立概念漂移场景
+
+以下命令生成并运行`concept_drift_v2`，不会覆盖旧的`paper_run`或`covariate_shift_v1`结果：
+
+```bash
+bash autodl/run_telemetry_scenario.sh \
+  configs/scenarios/concept_drift_v2.json
+```
+
+默认产物位置：
+
+- 原始模拟数据：`data/autodl_runtime/scenarios/concept_drift_v2/telemetry.ndjson`
+- Spark/H2O结果：`data/autodl_runtime/scenarios/concept_drift_v2/results`
+- 图表：`reports/scenarios/concept_drift_v2`
+- 日志：`logs/concept_drift_v2-*.log`
+
+脚本包含生成数据、契约验证、KS漂移检测、静态/重训练/加权/阈值校准消融、系统基准、结果诊断和绘图。若目标路径已存在，脚本会拒绝覆盖；重跑时应指定新的源数据、结果和图表路径。
+
 ## 7. 启动最小业务Dashboard
 
 完整实验结束后执行：

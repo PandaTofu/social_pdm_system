@@ -21,6 +21,12 @@ bash autodl/run_complete_paper_experiment.sh
 
 脚本依次完成漂移检测、C-MAPSS Logistic/RF/GBT同协议比较与非回归检查、自适应/消融实验、单节点Spark性能实验和统一绘图。输出位于`data/autodl_runtime/paper_run`及`reports/generated`。所有图只读取真实实验产物。
 
+独立场景配置位于`configs/scenarios/`。运行真正改变特征—故障关系的概念漂移场景且不覆盖历史结果：
+
+```bash
+bash autodl/run_telemetry_scenario.sh configs/scenarios/concept_drift_v2.json
+```
+
 实验完成后可启动最小业务Dashboard：
 
 ```bash

@@ -1,0 +1,20 @@
+{
+  "scenario": "covariate_shift_v1",
+  "seed": 20260821,
+  "start_time": "2025-01-01T00:00:00Z",
+  "logical_servers": 50,
+  "days": 7,
+  "sample_interval_minutes": 1,
+  "data_centers": 2,
+  "schema_v2_start_day": 4,
+  "drift_start_day": 5,
+  "failure_horizon_minutes": 30,
+  "precursor_window_minutes": 90,
+  "quality_error_rate": 0.02,
+  "late_event_rate": 0.01,
+  "duplicate_rate": 0.005,
+  "burst_windows": [
+    {"start_day": 3, "start_hour": 18, "duration_minutes": 60, "multiplier": 5},
+    {"start_day": 6, "start_hour": 20, "duration_minutes": 30, "multiplier": 10}
+  ]
+}

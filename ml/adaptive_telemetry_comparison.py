@@ -135,6 +135,8 @@ def main() -> None:
     parser.add_argument("--explain-rows", type=int, default=500)
     parser.add_argument("--skip-ablation", action="store_true",
                         help="Skip the unweighted retraining model for a shorter smoke run")
+    parser.add_argument("--scenario-name", default="unspecified")
+    parser.add_argument("--generator-config", type=Path)
     args = parser.parse_args()
     started = time.perf_counter()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +189,9 @@ def main() -> None:
         )
         stability = stability_by_day(static_model, adaptive_model, evaluation_frame, adaptive_threshold)
         report = {
+            "scenario": args.scenario_name,
+            "generator_config": (json.loads(args.generator_config.read_text(encoding="utf-8"))
+                                 if args.generator_config else None),
             "protocol": "train days 1-3; KS-detected day-5 feedback split 70/30 for recency-weighted retraining/threshold calibration; evaluate days 6-7",
             "class_balance_policy": "keep all positives and deterministically sample 8% of training negatives; H2O balance_classes disabled for every variant",
             "drift_detected": drift_detected, "retrain_triggered": drift_detected,
