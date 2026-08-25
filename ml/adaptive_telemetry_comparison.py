@@ -35,6 +35,10 @@ def spark_session() -> SparkSession:
     return (SparkSession.builder.appName("adaptive-telemetry-comparison")
             .config("spark.sql.adaptive.enabled", "true")
             .config("spark.sql.shuffle.partitions", "16")
+            # Generator scenario days are defined from a UTC start timestamp.
+            # Pinning the session prevents host timezone from moving late day-7
+            # incidents into day 8 and silently changing the held-out split.
+            .config("spark.sql.session.timeZone", "UTC")
             .getOrCreate())
 
 
