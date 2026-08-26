@@ -173,7 +173,22 @@ def main() -> None:
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
         (output / "comparison.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        print(json.dumps(report, indent=2))
+        console_summary = {
+            "dataset": report["dataset"],
+            "subset": report["subset"],
+            "train_distribution": train_distribution,
+            "test_distribution": test_distribution,
+            "models": {
+                name: {
+                    "operating_metrics": result["operating_metrics"],
+                    "training_seconds": result["training_seconds"],
+                }
+                for name, result in models.items()
+            },
+            "duration_seconds": report["duration_seconds"],
+            "full_report": str(output / "comparison.json"),
+        }
+        print(json.dumps(console_summary, indent=2))
     finally:
         h2o.cluster().shutdown(prompt=False)
 
