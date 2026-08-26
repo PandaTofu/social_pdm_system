@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,10 +34,11 @@ TARGET = "failure_within_horizon"
 
 
 def spark_session() -> SparkSession:
-    return (SparkSession.builder.appName("cmapss-rf-classification-baseline")
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.sql.shuffle.partitions", "16")
-            .getOrCreate())
+    session = (SparkSession.builder.appName("cmapss-rf-classification-baseline")
+               .config("spark.sql.adaptive.enabled", "true")
+               .getOrCreate())
+    session.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
+    return session
 
 
 def read_trajectory(spark: SparkSession, path: Path) -> DataFrame:

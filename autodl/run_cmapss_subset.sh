@@ -27,6 +27,7 @@ fi
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"
 export PATH="$(dirname "$SPARK_SUBMIT_BIN"):$JAVA_HOME/bin:$PATH"
 export SPARK_LOCAL_IP="${SPARK_LOCAL_IP:-127.0.0.1}"
+export SPARK_LOG_LEVEL="${SPARK_LOG_LEVEL:-WARN}"
 
 TREES="${CMAPSS_TREES:-100}"
 FOLDS="${CMAPSS_FOLDS:-10}"

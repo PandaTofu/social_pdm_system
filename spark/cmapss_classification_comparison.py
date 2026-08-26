@@ -57,7 +57,7 @@ def estimators(trees: int, folds: int, seed: int) -> dict[str, Any]:
         ),
         "gradient_boosting": H2OGradientBoostingEstimator(
             ntrees=trees, max_depth=5, min_rows=5, learn_rate=0.05,
-            stopping_rounds=5, stopping_metric="AUCPR", stopping_tolerance=1e-4,
+            stopping_rounds=0,
             **common,
         ),
     }
@@ -160,6 +160,7 @@ def main() -> None:
             "internal_cross_validation_folds": args.folds,
             "seed": args.seed,
             "trees_for_tree_models": args.trees,
+            "tree_training_policy": "exact requested tree count; early stopping disabled",
             "h2o_runtime": {
                 "max_memory": args.h2o_memory,
                 "threads": args.h2o_threads,

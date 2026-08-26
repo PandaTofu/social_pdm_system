@@ -28,6 +28,8 @@ done
 
 ## 3. 逐个运行
 
+四个子集必须使用同一套参数独立训练和测试。默认的随机森林和 GBT 都完整训练 100 棵树，GBT 不启用提前停止，以保证子集间的参数口径一致。Spark shuffle 分区由运行脚本传入，不在 Python 代码中固定。
+
 ```bash
 bash autodl/run_cmapss_subset.sh FD001
 bash autodl/run_cmapss_subset.sh FD002
