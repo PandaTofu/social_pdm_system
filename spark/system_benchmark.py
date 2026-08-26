@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,10 +23,11 @@ from spark.streaming_job import SCHEMA, classify, risk_scored
 
 
 def session() -> SparkSession:
-    return (SparkSession.builder.appName("social-pdm-system-benchmark")
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.sql.shuffle.partitions", "16")
-            .getOrCreate())
+    spark = (SparkSession.builder.appName("social-pdm-system-benchmark")
+             .config("spark.sql.adaptive.enabled", "true")
+             .getOrCreate())
+    spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
+    return spark
 
 
 def evaluate(frame: DataFrame, requested_rows: int) -> dict[str, float | int]:

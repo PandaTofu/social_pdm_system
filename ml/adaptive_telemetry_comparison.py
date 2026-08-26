@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -40,14 +41,15 @@ DEFAULT_WINDOWS = {
 
 
 def spark_session() -> SparkSession:
-    return (SparkSession.builder.appName("adaptive-telemetry-comparison")
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.sql.shuffle.partitions", "16")
-            # Generator scenario days are defined from a UTC start timestamp.
-            # Pinning the session prevents host timezone from moving late day-7
-            # incidents into day 8 and silently changing the held-out split.
-            .config("spark.sql.session.timeZone", "UTC")
-            .getOrCreate())
+    session = (SparkSession.builder.appName("adaptive-telemetry-comparison")
+               .config("spark.sql.adaptive.enabled", "true")
+               # Generator scenario days are defined from a UTC start timestamp.
+               # Pinning the session prevents host timezone from moving late day-7
+               # incidents into day 8 and silently changing the held-out split.
+               .config("spark.sql.session.timeZone", "UTC")
+               .getOrCreate())
+    session.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
+    return session
 
 
 def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
@@ -86,8 +88,11 @@ def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
                                      # ablations. Spark already applies the same
                                      # deterministic negative downsampling.
                                      balance_classes=False, seed=20260824)
-    model.train(x=FEATURES, y=TARGET, training_frame=frame,
-                weights_column="sample_weight" if use_recency_weight else None)
+    try:
+        model.train(x=FEATURES, y=TARGET, training_frame=frame,
+                    weights_column="sample_weight" if use_recency_weight else None)
+    finally:
+        h2o.remove(frame.frame_id)
     return model
 
 
@@ -191,6 +196,8 @@ def main() -> None:
     parser.add_argument("--evaluation-days", nargs=2, type=int)
     parser.add_argument("--stability-window-days", type=int)
     parser.add_argument("--recency-weight", type=float)
+    parser.add_argument("--h2o-memory", default="4G")
+    parser.add_argument("--h2o-threads", type=int, default=4)
     args = parser.parse_args()
     started = time.perf_counter()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,26 +240,37 @@ def main() -> None:
         spark.stop()
 
     try:
-        h2o.init(ip="127.0.0.1", port=6008, max_mem_size="4G", nthreads=4)
+        h2o.init(
+            ip="127.0.0.1", port=6008,
+            max_mem_size=args.h2o_memory, nthreads=args.h2o_threads,
+        )
         static_model = train_h2o(pre_csv, args.trees)
         evaluation_frame = h2o.import_file(str(eval_csv))
         static_performance = static_model.model_performance(evaluation_frame)
-        retrained_model = None
-        retrained_performance = None
+        retrained_summary = None
         if drift_detected and not args.skip_ablation:
             retrained_model = train_h2o(adaptive_csv, args.trees, use_recency_weight=False)
-            retrained_performance = retrained_model.model_performance(evaluation_frame)
+            try:
+                retrained_summary = binary_summary(
+                    retrained_model.model_performance(evaluation_frame), 0.5
+                )
+            finally:
+                h2o.remove(retrained_model.model_id)
         adaptive_model = train_h2o(adaptive_csv, args.trees, use_recency_weight=drift_detected)
         adaptive_performance = adaptive_model.model_performance(evaluation_frame)
-        calibration_performance = adaptive_model.model_performance(h2o.import_file(str(calibration_csv)))
-        adaptive_threshold, calibration_f1 = select_f1_threshold(calibration_performance)
+        calibration_frame = h2o.import_file(str(calibration_csv))
+        try:
+            calibration_performance = adaptive_model.model_performance(calibration_frame)
+            adaptive_threshold, calibration_f1 = select_f1_threshold(calibration_performance)
+        finally:
+            h2o.remove(calibration_frame.frame_id)
         variants = {
             "static_rf": binary_summary(static_performance, 0.5),
             "weighted_retraining": binary_summary(adaptive_performance, 0.5),
             "full_adaptive": binary_summary(adaptive_performance, adaptive_threshold),
         }
-        if retrained_performance is not None:
-            variants["unweighted_retraining"] = binary_summary(retrained_performance, 0.5)
+        if retrained_summary is not None:
+            variants["unweighted_retraining"] = retrained_summary
         explanations = write_explanations(
             adaptive_model, evaluation_frame, adaptive_threshold, args.output_dir, args.explain_rows
         )
@@ -271,6 +289,7 @@ def main() -> None:
             "class_balance_policy": "keep all positives and deterministically sample 8% of training negatives; H2O balance_classes disabled for every variant",
             "drift_detected": drift_detected, "retrain_triggered": drift_detected,
             "drift_monitor": drift_report, "trees": args.trees,
+            "h2o_runtime": {"max_memory": args.h2o_memory, "threads": args.h2o_threads},
             "pre_drift_train": {"rows": pre_rows, "positive_rows": pre_positive},
             "adaptive_train": {"rows": adaptive_rows, "positive_rows": adaptive_positive},
             "feedback_calibration": {"rows": calibration_rows, "positive_rows": calibration_positive},
@@ -291,7 +310,14 @@ def main() -> None:
         report["f1_change_at_0_5"] = report["adaptive_f1_at_0_5"] - report["static_f1_at_0_5"]
         report["f1_change_at_operating_threshold"] = report["adaptive_f1_at_calibrated_threshold"] - report["static_f1_at_0_5"]
         (args.output_dir / "adaptive_comparison.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        print(json.dumps(report, indent=2))
+        print(json.dumps({
+            "scenario": report["scenario"],
+            "protocol": report["protocol"],
+            "drift_detected": report["drift_detected"],
+            "variants": report["variants"],
+            "duration_seconds": report["duration_seconds"],
+            "full_report": str(args.output_dir / "adaptive_comparison.json"),
+        }, indent=2))
     finally:
         h2o.cluster().shutdown(prompt=False)
 

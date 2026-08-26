@@ -14,29 +14,51 @@ fi
 
 mkdir -p "$(dirname "$SOURCE")" "$RUN_ROOT" "$FIGURES" logs
 
-python apps/generate_telemetry.py --config "$CONFIG" --output-dir "$SOURCE"
-python tests/validate_contract.py "$SOURCE"
+if [[ -x .venv/bin/spark-submit ]]; then
+  SPARK_SUBMIT_BIN="${SPARK_SUBMIT_BIN:-.venv/bin/spark-submit}"
+  PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+else
+  SPARK_SUBMIT_BIN="${SPARK_SUBMIT_BIN:-spark-submit}"
+  PYTHON_BIN="${PYTHON_BIN:-python}"
+fi
 
-python autodl/make_drift_windows.py \
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"
+export PATH="$(dirname "$SPARK_SUBMIT_BIN"):$JAVA_HOME/bin:$PATH"
+export SPARK_LOCAL_IP="${SPARK_LOCAL_IP:-127.0.0.1}"
+export SPARK_LOG_LEVEL="${SPARK_LOG_LEVEL:-WARN}"
+
+MASTER="${PDM_MASTER:-local[1]}"
+DRIVER_MEMORY="${PDM_DRIVER_MEMORY:-512m}"
+SHUFFLE_PARTITIONS="${PDM_SHUFFLE_PARTITIONS:-4}"
+H2O_MEMORY="${PDM_H2O_MEMORY:-1G}"
+H2O_THREADS="${PDM_H2O_THREADS:-1}"
+
+"$PYTHON_BIN" apps/generate_telemetry.py --config "$CONFIG" --output-dir "$SOURCE"
+"$PYTHON_BIN" tests/validate_contract.py "$SOURCE"
+
+"$PYTHON_BIN" autodl/make_drift_windows.py \
   --source "$SOURCE" --config "$CONFIG" --out-dir "$RUN_ROOT/drift_windows"
-python ml/drift_monitor.py \
+"$PYTHON_BIN" ml/drift_monitor.py \
   --reference "$RUN_ROOT/drift_windows/reference.npz" \
   --current "$RUN_ROOT/drift_windows/current.npz" \
   --threshold 0.20 --alpha 0.05 --out "$RUN_ROOT/drift_report.json"
 
-spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=32 \
+"$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
+  --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \
   ml/adaptive_telemetry_comparison.py \
   --source "$SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
   --drift-report "$RUN_ROOT/drift_report.json" --trees 80 --explain-rows 500 \
   --scenario-name concept_drift_30d_v3 --generator-config "$CONFIG" \
+  --h2o-memory "$H2O_MEMORY" --h2o-threads "$H2O_THREADS" \
   2>&1 | tee logs/concept-drift-30d-adaptive-comparison.log
 
-spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=32 \
+"$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
+  --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \
   spark/system_benchmark.py --source "$SOURCE" --out "$RUN_ROOT/system_benchmark.json" \
   --sizes 50000 100000 250000 500000 1000000 2000000 4000000 --compare-schema-read \
   2>&1 | tee logs/concept-drift-30d-system-benchmark.log
 
-python scripts/generate_complete_paper_figures.py \
+"$PYTHON_BIN" scripts/generate_complete_paper_figures.py \
   --result "$RUN_ROOT/adaptive_experiment/adaptive_comparison.json" \
   --drift "$RUN_ROOT/drift_report.json" \
   --system-benchmark "$RUN_ROOT/system_benchmark.json" \
