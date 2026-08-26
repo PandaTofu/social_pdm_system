@@ -32,6 +32,8 @@ DRIVER_MEMORY="${PDM_DRIVER_MEMORY:-512m}"
 SHUFFLE_PARTITIONS="${PDM_SHUFFLE_PARTITIONS:-4}"
 H2O_MEMORY="${PDM_H2O_MEMORY:-1G}"
 H2O_THREADS="${PDM_H2O_THREADS:-1}"
+KS_THRESHOLD="${PDM_KS_THRESHOLD:-0.10}"
+KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
 
 "$PYTHON_BIN" apps/generate_telemetry.py --config "$CONFIG" --output-dir "$SOURCE"
 "$PYTHON_BIN" tests/validate_contract.py "$SOURCE"
@@ -41,7 +43,7 @@ H2O_THREADS="${PDM_H2O_THREADS:-1}"
 "$PYTHON_BIN" ml/drift_monitor.py \
   --reference "$RUN_ROOT/drift_windows/reference.npz" \
   --current "$RUN_ROOT/drift_windows/current.npz" \
-  --threshold 0.20 --alpha 0.05 --out "$RUN_ROOT/drift_report.json"
+  --threshold "$KS_THRESHOLD" --alpha "$KS_ALPHA" --out "$RUN_ROOT/drift_report.json"
 
 "$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
   --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \

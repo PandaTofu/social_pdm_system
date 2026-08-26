@@ -12,6 +12,11 @@
   "failure_horizon_minutes": 30,
   "precursor_window_minutes": 30,
   "concept_drift_strength": 1.0,
+  "drift_detection": {
+    "method": "two-sample KS with effect-size and significance gates",
+    "ks_threshold": 0.10,
+    "alpha": 0.05
+  },
   "experiment_windows": {
     "initial_train": [1, 10],
     "drift_reference": [1, 10],
