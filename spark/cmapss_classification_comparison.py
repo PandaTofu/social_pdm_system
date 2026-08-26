@@ -39,7 +39,14 @@ from spark.cmapss_rf_classification_baseline import (
 
 
 def estimators(trees: int, folds: int, seed: int) -> dict[str, Any]:
-    common = {"nfolds": folds, "fold_assignment": "Stratified", "seed": seed}
+    common = {
+        "nfolds": folds,
+        "fold_assignment": "Stratified",
+        "keep_cross_validation_models": False,
+        "keep_cross_validation_predictions": False,
+        "keep_cross_validation_fold_assignment": False,
+        "seed": seed,
+    }
     return {
         "logistic_regression": H2OGeneralizedLinearEstimator(
             family="binomial", standardize=True, lambda_search=True, alpha=[0.0],
@@ -63,8 +70,9 @@ def train_and_score(name: str, model: Any, train_frame: Any, test_frame: Any,
     performance = model.model_performance(test_frame)
     metrics = binary_summary(performance, 0.5)
     predictions = model.predict(test_frame)
+    combined = predictions.cbind(test_frame[TARGET])
     prediction_path = output / f"predictions_{name}.csv"
-    h2o.download_csv(predictions.cbind(test_frame[TARGET]), str(prediction_path))
+    h2o.download_csv(combined, str(prediction_path))
     return {
         "display_name": {
             "logistic_regression": "Logistic Regression",
@@ -87,6 +95,8 @@ def main() -> None:
     parser.add_argument("--trees", type=int, default=100)
     parser.add_argument("--folds", type=int, default=10)
     parser.add_argument("--seed", type=int, default=20260824)
+    parser.add_argument("--h2o-memory", default="6G")
+    parser.add_argument("--h2o-threads", type=int, default=-1)
     args = parser.parse_args()
 
     started = time.perf_counter()
@@ -112,15 +122,23 @@ def main() -> None:
         spark.stop()
 
     try:
-        h2o.init(ip="127.0.0.1", port=54321, max_mem_size="6G", nthreads=-1)
+        h2o.init(
+            ip="127.0.0.1",
+            port=54321,
+            max_mem_size=args.h2o_memory,
+            nthreads=args.h2o_threads,
+        )
         train_h2o = h2o.import_file(str(train_csv))
         test_h2o = h2o.import_file(str(test_csv))
         train_h2o[TARGET] = train_h2o[TARGET].asfactor()
         test_h2o[TARGET] = test_h2o[TARGET].asfactor()
-        models = {
-            name: train_and_score(name, estimator, train_h2o, test_h2o, output)
-            for name, estimator in estimators(args.trees, args.folds, args.seed).items()
-        }
+        models = {}
+        for name, estimator in estimators(args.trees, args.folds, args.seed).items():
+            try:
+                models[name] = train_and_score(name, estimator, train_h2o, test_h2o, output)
+            finally:
+                if estimator.model_id:
+                    h2o.remove(estimator.model_id)
         rf_metrics = models["random_forest"]["operating_metrics"]
         zero_delta = {metric: 0.0 for metric in ("precision", "recall", "f1", "roc_auc", "pr_auc")}
         non_regression = {
@@ -142,6 +160,11 @@ def main() -> None:
             "internal_cross_validation_folds": args.folds,
             "seed": args.seed,
             "trees_for_tree_models": args.trees,
+            "h2o_runtime": {
+                "max_memory": args.h2o_memory,
+                "threads": args.h2o_threads,
+                "cross_validation_models_retained": False,
+            },
             "train_distribution": train_distribution,
             "test_distribution": test_distribution,
             "models": models,
