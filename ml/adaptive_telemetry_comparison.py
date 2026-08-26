@@ -1,9 +1,10 @@
-"""Compare a static and a KS-triggered adaptive H2O Random Forest on telemetry.
+"""Compare static and KS-triggered adaptive H2O Random Forest variants.
 
-Timeline: days 1-3 train both systems; day 5 is the detected drift window and
-supplies delayed feedback labels.  A deterministic 70/30 feedback split keeps
-the threshold-calibration rows out of retraining; days 6-7 are held out for the
-final, identical evaluation.  This prevents label and threshold leakage.
+All experiment phases are expressed as continuous days from the configured UTC
+start timestamp.  A deterministic 70/30 feedback split keeps threshold
+calibration rows out of retraining, and the configured evaluation interval is
+fully held out.  This prevents label, time and threshold leakage for both the
+seven-day development scenario and the thirty-day paper scenario.
 """
 from __future__ import annotations
 
@@ -29,6 +30,13 @@ FEATURES = ["cpu_util_pct", "memory_util_pct", "disk_util_pct", "disk_iops", "di
             "network_in_mbps", "network_out_mbps", "request_rate_rps", "response_p50_ms",
             "response_p95_ms", "error_rate", "timeout_rate", "queue_depth", "active_connections"]
 TARGET = "failure_within_30min"
+DEFAULT_WINDOWS = {
+    "initial_train": [1, 3],
+    "feedback": [5, 5],
+    "evaluation": [6, 7],
+    "stability_window_days": 1,
+    "recency_weight": 4.0,
+}
 
 
 def spark_session() -> SparkSession:
@@ -43,7 +51,9 @@ def spark_session() -> SparkSession:
 
 
 def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
-               add_recency_weight: bool = False) -> tuple[Path, int, int]:
+               add_recency_weight: bool = False,
+               recent_days: tuple[int, int] = (5, 5),
+               recency_weight: float = 4.0) -> tuple[Path, int, int]:
     # Context columns are excluded from model features but retained so sampled
     # alerts can be traced back to a logical server and event time.
     selected = frame.select("event_id", "event_time", "server_id", *FEATURES, TARGET, "day").dropna(
@@ -54,9 +64,10 @@ def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
         # class balancing. This bounds local AutoDL memory without changing time order.
         selected = selected.sampleBy(TARGET, fractions={0: 0.08, 1: 1.0}, seed=20260824)
     if add_recency_weight:
-        # Drift-era labels are deliberately four times as influential as the
-        # legacy regime.  This is an explicit, reproducible recency policy.
-        selected = selected.withColumn("sample_weight", F.when(F.col("day") == 5, F.lit(4.0)).otherwise(F.lit(1.0)))
+        selected = selected.withColumn(
+            "sample_weight",
+            F.when(F.col("day").between(*recent_days), F.lit(recency_weight)).otherwise(F.lit(1.0)),
+        )
     selected = selected.persist(StorageLevel.MEMORY_AND_DISK)
     try:
         total = selected.count()
@@ -113,20 +124,53 @@ def write_explanations(model, evaluation_frame, threshold: float, output_dir: Pa
         return {"status": "unsupported", "rows": 0, "error": f"{type(error).__name__}: {error}"}
 
 
-def stability_by_day(static_model, adaptive_model, evaluation_frame, adaptive_threshold: float) -> list[dict[str, object]]:
-    """Measure post-drift performance without claiming a six-month simulation."""
+def stability_by_window(static_model, adaptive_model, evaluation_frame,
+                        adaptive_threshold: float, evaluation_days: tuple[int, int],
+                        window_days: int) -> list[dict[str, object]]:
+    """Measure held-out post-drift performance in configured day windows."""
     rows: list[dict[str, object]] = []
-    for day in (6, 7):
-        daily = evaluation_frame[evaluation_frame["day"] == day, :]
-        if int(daily.nrows) == 0:
+    for start in range(evaluation_days[0], evaluation_days[1] + 1, window_days):
+        end = min(start + window_days - 1, evaluation_days[1])
+        window = evaluation_frame[(evaluation_frame["day"] >= start) & (evaluation_frame["day"] <= end), :]
+        if int(window.nrows) == 0:
             continue
         rows.append({
-            "day": day,
-            "rows": int(daily.nrows),
-            "static": binary_summary(static_model.model_performance(daily), 0.5),
-            "full_adaptive": binary_summary(adaptive_model.model_performance(daily), adaptive_threshold),
+            "day": end,
+            "window_start_day": start,
+            "window_end_day": end,
+            "rows": int(window.nrows),
+            "static": binary_summary(static_model.model_performance(window), 0.5),
+            "full_adaptive": binary_summary(adaptive_model.model_performance(window), adaptive_threshold),
         })
     return rows
+
+
+def resolve_windows(config: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    configured = config.get("experiment_windows", {}) if config else {}
+    resolved = {**DEFAULT_WINDOWS, **configured}
+    for name, value in (("initial_train", args.train_days),
+                        ("feedback", args.feedback_days),
+                        ("evaluation", args.evaluation_days)):
+        if value:
+            resolved[name] = value
+    if args.stability_window_days:
+        resolved["stability_window_days"] = args.stability_window_days
+    if args.recency_weight:
+        resolved["recency_weight"] = args.recency_weight
+    for name in ("initial_train", "feedback", "evaluation"):
+        start, end = map(int, resolved[name])
+        if start <= 0 or end < start:
+            raise ValueError(f"Invalid {name} day range: {resolved[name]}")
+        resolved[name] = [start, end]
+    if resolved["initial_train"][1] >= resolved["feedback"][0]:
+        raise ValueError("Initial training must finish before delayed feedback begins")
+    if resolved["feedback"][1] >= resolved["evaluation"][0]:
+        raise ValueError("Feedback/calibration must finish before held-out evaluation begins")
+    resolved["stability_window_days"] = int(resolved["stability_window_days"])
+    resolved["recency_weight"] = float(resolved["recency_weight"])
+    if resolved["stability_window_days"] <= 0 or resolved["recency_weight"] <= 0:
+        raise ValueError("Stability window and recency weight must be positive")
+    return resolved
 
 
 def main() -> None:
@@ -141,27 +185,48 @@ def main() -> None:
                         help="Skip the unweighted retraining model for a shorter smoke run")
     parser.add_argument("--scenario-name", default="unspecified")
     parser.add_argument("--generator-config", type=Path)
+    parser.add_argument("--experiment-start", help="UTC experiment date, YYYY-MM-DD")
+    parser.add_argument("--train-days", nargs=2, type=int)
+    parser.add_argument("--feedback-days", nargs=2, type=int)
+    parser.add_argument("--evaluation-days", nargs=2, type=int)
+    parser.add_argument("--stability-window-days", type=int)
+    parser.add_argument("--recency-weight", type=float)
     args = parser.parse_args()
     started = time.perf_counter()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     drift_report = json.loads(args.drift_report.read_text(encoding="utf-8"))
     drift_detected = bool(drift_report.get("drift_detected", False))
+    generator_config = (json.loads(args.generator_config.read_text(encoding="utf-8"))
+                        if args.generator_config else {})
+    windows = resolve_windows(generator_config, args)
+    train_days = tuple(windows["initial_train"])
+    feedback_days = tuple(windows["feedback"])
+    evaluation_days = tuple(windows["evaluation"])
+    configured_start = str(generator_config.get("start_time", ""))[:10]
+    experiment_start = args.experiment_start or configured_start or None
 
     spark = spark_session()
     try:
-        data = (classify(spark.read.schema(SCHEMA).json(str(args.source)))
-                .filter("is_valid")
-                .dropDuplicates(["event_id"])
-                .withColumn("day", F.dayofmonth("event_time")))
-        pre = data.filter(F.col("day").between(1, 3))
-        drift_feedback = data.filter(F.col("day") == 5)
+        data = (classify(spark.read.schema(SCHEMA).option("recursiveFileLookup", "true").json(str(args.source)))
+                .filter("is_valid").dropDuplicates(["event_id"]))
+        if experiment_start is None:
+            experiment_start = str(data.select(F.min(F.to_date("event_time"))).first()[0])
+        data = data.withColumn(
+            "day", F.datediff(F.to_date("event_time"), F.lit(experiment_start).cast("date")) + F.lit(1)
+        )
+        pre = data.filter(F.col("day").between(*train_days))
+        drift_feedback = data.filter(F.col("day").between(*feedback_days))
         # Feedback split happens before both retraining and threshold tuning.
         feedback_train = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) < 7)
         feedback_calibration = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) >= 7)
         adaptive_training = pre.unionByName(feedback_train) if drift_detected else pre
-        evaluation = data.filter(F.col("day").between(6, 7))
+        evaluation = data.filter(F.col("day").between(*evaluation_days))
         pre_csv, pre_rows, pre_positive = export_csv(pre, args.output_dir / "prepared" / "pre_drift_train", True)
-        adaptive_csv, adaptive_rows, adaptive_positive = export_csv(adaptive_training, args.output_dir / "prepared" / "adaptive_train", True, add_recency_weight=drift_detected)
+        adaptive_csv, adaptive_rows, adaptive_positive = export_csv(
+            adaptive_training, args.output_dir / "prepared" / "adaptive_train", True,
+            add_recency_weight=drift_detected, recent_days=feedback_days,
+            recency_weight=float(windows["recency_weight"]),
+        )
         calibration_csv, calibration_rows, calibration_positive = export_csv(feedback_calibration, args.output_dir / "prepared" / "feedback_calibration", False)
         eval_csv, eval_rows, eval_positive = export_csv(evaluation, args.output_dir / "prepared" / "evaluation", False)
     finally:
@@ -191,12 +256,18 @@ def main() -> None:
         explanations = write_explanations(
             adaptive_model, evaluation_frame, adaptive_threshold, args.output_dir, args.explain_rows
         )
-        stability = stability_by_day(static_model, adaptive_model, evaluation_frame, adaptive_threshold)
+        stability = stability_by_window(
+            static_model, adaptive_model, evaluation_frame, adaptive_threshold,
+            evaluation_days, int(windows["stability_window_days"]),
+        )
         report = {
             "scenario": args.scenario_name,
-            "generator_config": (json.loads(args.generator_config.read_text(encoding="utf-8"))
-                                 if args.generator_config else None),
-            "protocol": "train days 1-3; KS-detected day-5 feedback split 70/30 for recency-weighted retraining/threshold calibration; evaluate days 6-7",
+            "generator_config": generator_config or None,
+            "experiment_start": experiment_start,
+            "experiment_windows": windows,
+            "protocol": (f"train days {train_days[0]}-{train_days[1]}; KS-triggered feedback days "
+                         f"{feedback_days[0]}-{feedback_days[1]} split 70/30 for retraining/calibration; "
+                         f"evaluate held-out days {evaluation_days[0]}-{evaluation_days[1]}"),
             "class_balance_policy": "keep all positives and deterministically sample 8% of training negatives; H2O balance_classes disabled for every variant",
             "drift_detected": drift_detected, "retrain_triggered": drift_detected,
             "drift_monitor": drift_report, "trees": args.trees,

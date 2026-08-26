@@ -11,6 +11,8 @@
 
 AutoDL 用户请直接阅读 [AutoDL部署指南.md](AutoDL部署指南.md)，不要在 AutoDL 容器内部安装 Docker。
 
+对于低配普通云服务器，先使用 [云服务器部署指南.md](云服务器部署指南.md) 中的轻量实验容器完成 Git、Java、PySpark 和数据生成冒烟测试；不要直接启动完整 Compose 服务栈。
+
 ## 论文完整实验
 
 在AutoDL准备好Java 17、Python依赖、`data/development.ndjson`和`data/CMAPSSData`后运行：

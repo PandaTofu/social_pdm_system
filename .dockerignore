@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+*.bundle
+data
+logs
+reports
+.pytest_cache
+.mypy_cache

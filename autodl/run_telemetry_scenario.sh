@@ -18,7 +18,7 @@ mkdir -p "$(dirname "$SOURCE")" "$RUN_ROOT" "$FIGURES" logs
 python apps/generate_telemetry.py --config "$CONFIG" --output "$SOURCE"
 python tests/validate_contract.py "$SOURCE"
 
-python autodl/make_drift_windows.py --source "$SOURCE" --out-dir "$RUN_ROOT/drift_windows"
+python autodl/make_drift_windows.py --source "$SOURCE" --config "$CONFIG" --out-dir "$RUN_ROOT/drift_windows"
 python ml/drift_monitor.py \
   --reference "$RUN_ROOT/drift_windows/reference.npz" \
   --current "$RUN_ROOT/drift_windows/current.npz" \

@@ -1,0 +1,20 @@
+services:
+  experiment:
+    build:
+      context: .
+      dockerfile: Dockerfile.experiment
+    image: social-pdm-experiment:3.5.1
+    working_dir: /workspace
+    environment:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      PYSPARK_PYTHON: /usr/local/bin/python
+      PYSPARK_DRIVER_PYTHON: /usr/local/bin/python
+      SPARK_LOCAL_IP: 127.0.0.1
+    volumes:
+      - .:/workspace
+    ports:
+      - "127.0.0.1:8090:8090"
+    cpus: "1.50"
+    mem_limit: 1200m
+    shm_size: 256m
+    restart: "no"

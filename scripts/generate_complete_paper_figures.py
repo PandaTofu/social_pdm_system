@@ -191,6 +191,45 @@ def cmapss_non_regression(comparison: dict[str, Any], output: Path) -> None:
     save(figure, output)
 
 
+def cmapss_cross_subset(summary: dict[str, Any], output: Path) -> None:
+    """Compare algorithms within each C-MAPSS subset without pooling rows."""
+    subsets = [name for name in ("FD001", "FD002", "FD003", "FD004")
+               if name in summary["subsets"]]
+    models = ("logistic_regression", "random_forest", "gradient_boosting")
+    labels = [summary["subsets"][subsets[0]]["models"][name]["display_name"] for name in models]
+    colors = ("#4C78A8", "#59A14F", "#E45756")
+    figure, axes = plt.subplots(2, 2, figsize=(12, 8.4))
+    x = np.arange(len(subsets)); width = .24
+    for axis, metric, title in ((axes[0, 0], "f1", "F1 by subset and algorithm"),
+                                (axes[0, 1], "recall", "Recall by subset and algorithm")):
+        for index, (model, label, color) in enumerate(zip(models, labels, colors)):
+            values = [summary["subsets"][subset]["models"][model]["operating_metrics"][metric]
+                      for subset in subsets]
+            axis.bar(x + (index - 1) * width, values, width, label=label, color=color)
+        axis.set_xticks(x, subsets)
+        axis.set(title=title, ylabel="Official-test score", ylim=(0, 1.05))
+        axis.grid(axis="y", alpha=.2)
+        axis.legend(frameon=False, fontsize=8)
+
+    for axis, metric, title in ((axes[1, 0], "f1", "F1 heatmap"),
+                                (axes[1, 1], "pr_auc", "PR-AUC heatmap")):
+        matrix = np.asarray([
+            [summary["subsets"][subset]["models"][model]["operating_metrics"][metric]
+             for model in models]
+            for subset in subsets
+        ])
+        image = axis.imshow(matrix, cmap="YlGnBu", vmin=0, vmax=1, aspect="auto")
+        for row in range(matrix.shape[0]):
+            for column in range(matrix.shape[1]):
+                axis.text(column, row, f"{matrix[row, column]:.3f}", ha="center", va="center", fontsize=9)
+        axis.set_xticks(np.arange(len(labels)), labels, rotation=15, ha="right")
+        axis.set_yticks(np.arange(len(subsets)), subsets)
+        axis.set_title(title)
+        figure.colorbar(image, ax=axis, fraction=.046)
+    figure.suptitle("NASA C-MAPSS: independent FD001-FD004 classification comparisons")
+    save(figure, output)
+
+
 def drift_figure(report: dict[str, Any], output: Path) -> None:
     values = report["feature_ks_d"]
     figure, axis = plt.subplots(figsize=(8.5, 4.4))
@@ -228,7 +267,9 @@ def model_comparison(result: dict[str, Any], output: Path) -> None:
         offset = (index - (len(metrics) - 1) / 2) * width
         axis.bar(x + offset, [variants[key][metric] for key in keys], width, label=metric.replace("_", " ").upper())
     axis.set_xticks(x, [labels[key] for key in keys])
-    axis.set(title="Held-out model comparison (days 6-7)", ylabel="Score", ylim=(0, 1))
+    evaluation = result.get("experiment_windows", {}).get("evaluation")
+    suffix = f" (days {evaluation[0]}-{evaluation[1]})" if evaluation else ""
+    axis.set(title=f"Held-out model comparison{suffix}", ylabel="Score", ylim=(0, 1))
     axis.legend(frameon=False, ncol=max(1, len(metrics)))
     save(figure, output)
 
@@ -255,11 +296,47 @@ def system_figure(report: dict[str, Any], output: Path) -> None:
     figure, left = plt.subplots(figsize=(8.5, 4.5))
     right = left.twinx()
     left.plot(x, [row["throughput_rows_per_second"] for row in rows], marker="o", color="#4C78A8", label="Throughput")
-    right.plot(x, [row["latency_ms"] for row in rows], marker="s", color="#E45756", label="Batch latency")
+    right.plot(x, [row["latency_ms"] for row in rows], marker="s", color="#E45756", label="Batch duration")
     left.set(xlabel="Processed rows", ylabel="Rows per second", title="Observed single-node Spark scaling")
-    right.set_ylabel("Batch latency (ms)")
+    right.set_ylabel("Whole-batch processing duration (ms)")
     lines = left.lines + right.lines
     left.legend(lines, [line.get_label() for line in lines], frameon=False, loc="upper left")
+    save(figure, output)
+
+
+def schema_quality_figure(report: dict[str, Any], output: Path) -> None:
+    """Visualize E1 evidence without calling batch timing end-to-end latency."""
+    schema_rows = report.get("schema_read_comparison", [])
+    scaling = report.get("scaling", [])
+    if not schema_rows or not scaling:
+        return
+    modes = {row["mode"]: row for row in schema_rows}
+    if not {"runtime_inference", "explicit_schema"}.issubset(modes):
+        return
+    inference = modes["runtime_inference"]
+    explicit = modes["explicit_schema"]
+    largest = max(scaling, key=lambda row: row["processed_rows"])
+    received = max(int(largest["processed_rows"]), 1)
+    accepted = int(largest["accepted_rows"])
+    quarantined = int(largest["quarantined_rows"])
+
+    figure, axes = plt.subplots(1, 3, figsize=(12.2, 4.2))
+    read_labels = ["Runtime\ninference", "Explicit\nschema"]
+    durations = [inference["duration_seconds"], explicit["duration_seconds"]]
+    bars = axes[0].bar(read_labels, durations, color=["#E45756", "#59A14F"])
+    axes[0].bar_label(bars, labels=[f"{value:.3f}s" for value in durations], padding=3)
+    axes[0].set(title="Schema read duration", ylabel="Wall-clock seconds")
+
+    throughputs = [inference["throughput_rows_per_second"], explicit["throughput_rows_per_second"]]
+    bars = axes[1].bar(read_labels, throughputs, color=["#E45756", "#59A14F"])
+    axes[1].bar_label(bars, labels=[f"{value / 1_000:.0f}k" for value in throughputs], padding=3)
+    axes[1].set(title="Schema read throughput", ylabel="Rows per second")
+
+    quality_values = [accepted / received * 100.0, quarantined / received * 100.0]
+    bars = axes[2].bar(["Accepted", "Quarantined"], quality_values, color=["#4C78A8", "#F28E2B"])
+    axes[2].bar_label(bars, labels=[f"{value:.2f}%" for value in quality_values], padding=3)
+    axes[2].set(title=f"Quality routing ({received:,} rows)", ylabel="Share of received rows", ylim=(0, 105))
+    figure.suptitle("Observed E1 evidence: single-node file-read and quality-routing experiment")
     save(figure, output)
 
 
@@ -271,8 +348,10 @@ def stability_figure(result: dict[str, Any], output: Path) -> None:
     figure, axis = plt.subplots(figsize=(7.8, 4.3))
     axis.plot(days, [row["static"]["f1"] for row in rows], marker="o", label="Static RF", color="#7F7F7F")
     axis.plot(days, [row["full_adaptive"]["f1"] for row in rows], marker="s", label="Full adaptive", color="#59A14F")
-    axis.set(xticks=days, xlabel="Post-drift evaluation day", ylabel="F1 score", ylim=(0, 1),
-             title="Observed post-drift model stability")
+    evaluation = result.get("experiment_windows", {}).get("evaluation")
+    suffix = f": days {evaluation[0]}-{evaluation[1]}" if evaluation else ""
+    axis.set(xticks=days, xlabel="Held-out window end day", ylabel="F1 score", ylim=(0, 1),
+             title=f"Observed post-drift model stability{suffix}")
     axis.legend(frameon=False)
     save(figure, output)
 
@@ -301,7 +380,9 @@ def shap_figure(path: Path, output: Path) -> None:
 
 
 def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path,
-                  cmapss_comparison: dict[str, Any] | None = None) -> None:
+                  cmapss_comparison: dict[str, Any] | None = None,
+                  system_benchmark: dict[str, Any] | None = None,
+                  cmapss_summary: dict[str, Any] | None = None) -> None:
     variants = normalized_variants(result)
     lines = ["# 可复现实验结果汇总", ""]
     if cmapss_comparison:
@@ -317,6 +398,10 @@ def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path,
             ))
         check = cmapss_comparison["non_regression_check"]
         lines.extend(["", f"- 增强流水线非回归检查：{'通过' if check['passed'] else '未通过'}；容差={check['tolerance']:.2f}。", ""])
+    if cmapss_summary:
+        lines.extend(["## NASA C-MAPSS跨子集范围", "",
+                      f"- 已汇总子集：{', '.join(cmapss_summary['subsets'])}。",
+                      "- 每个子集独立评价，不合并轨迹行计算总F1。", ""])
     lines.extend(["## 模拟社交服务器数据消融", "",
                   "| 方法 | Precision | Recall | F1 | PR-AUC | 阈值 |",
                   "|---|---:|---:|---:|---:|---:|"])
@@ -331,6 +416,37 @@ def write_summary(result: dict[str, Any], drift: dict[str, Any], output: Path,
     lines.extend(["", f"- KS最大D值：{drift['max_ks_d']:.4f}",
                   f"- 漂移判定：{'是' if drift['drift_detected'] else '否'}",
                   "- 所有数值均来自传入的JSON/CSV实验产物，绘图脚本不包含论文目标值。", ""])
+    config = result.get("generator_config") or {}
+    if config:
+        lines.extend(["## 模拟数据与稳定性口径", "",
+                      f"- 场景：`{result.get('scenario', 'unspecified')}`；逻辑服务器：{config.get('logical_servers', '-')}；天数：{config.get('days', '-')}。",
+                      f"- 标签窗口：{config.get('failure_horizon_minutes', '-')}分钟；故障前兆窗口：{config.get('precursor_window_minutes', '-')}分钟。",
+                      f"- 实验协议：{result.get('protocol', '-')}。",
+                      "- 稳定性图只表示配置的实际留出窗口，不表示论文所述六个月稳定性。", ""])
+    if system_benchmark:
+        rows = system_benchmark.get("scaling", [])
+        schema_rows = {row["mode"]: row for row in system_benchmark.get("schema_read_comparison", [])}
+        lines.extend(["## Spark单节点性能证据", ""])
+        if rows:
+            largest = max(rows, key=lambda row: row["processed_rows"])
+            lines.extend([f"- 最大实测规模：{largest['processed_rows']:,}行；吞吐量：{largest['throughput_rows_per_second']:.2f} rows/s；整批处理耗时：{largest['duration_seconds']:.3f}s。"])
+        if {"runtime_inference", "explicit_schema"}.issubset(schema_rows):
+            inference = schema_rows["runtime_inference"]
+            explicit = schema_rows["explicit_schema"]
+            speedup = inference["duration_seconds"] / max(explicit["duration_seconds"], 1e-12)
+            lines.append(f"- 显式Schema读取相对运行时推断的实测加速比：{speedup:.2f}x。")
+        lines.extend([f"- 范围声明：{system_benchmark.get('scope_warning', 'single-node benchmark only')}",
+                      "- `duration_seconds/latency_ms`是整批处理墙钟耗时，不是逐事件 `t_output - t_ingestion` 端到端延迟。", ""])
+    cmapss_scope = ("FD001-FD004 Logistic/RF/GBT统一协议比较" if cmapss_summary
+                    else "FD001 Logistic/RF/GBT统一协议比较")
+    days = config.get("days", "-") if config else "-"
+    lines.extend(["## 论文四步评估证据状态", "",
+                  "| 步骤 | 当前可用证据 | 结论边界 |",
+                  "|---|---|---|",
+                  f"| Step 1 CMAPSS基线验证 | {cmapss_scope} | 算法基准，不等同于Su平台全栈复现 |",
+                  f"| Step 2 模拟数据暴露差距 | 静态RF、KS漂移、运行时Schema推断 | 单节点{days}天场景 |",
+                  "| Step 3 增强验证 | 重训练/加权/阈值校准、显式Schema、质量隔离、TreeSHAP | 不代表K8s自动扩缩容 |",
+                  "| Step 4 CMAPSS非回归 | 干净数据预测产物与指标保持一致 | 验证算法非回归，不验证全栈性能 |", ""])
     output.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -341,6 +457,7 @@ def main() -> None:
     parser.add_argument("--cmapss-metrics", type=Path)
     parser.add_argument("--cmapss-predictions", type=Path)
     parser.add_argument("--cmapss-comparison", type=Path)
+    parser.add_argument("--cmapss-summary", type=Path, help="FD001-FD004 aggregate JSON")
     parser.add_argument("--system-benchmark", type=Path)
     parser.add_argument("--shap-contributions", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -358,6 +475,9 @@ def main() -> None:
         cmapss_model_comparison(cmapss_comparison, args.out_dir / "fig3_cmapss_model_comparison")
         cmapss_pr_comparison(cmapss_comparison, args.cmapss_comparison, args.out_dir / "fig4_cmapss_pr_comparison")
         cmapss_non_regression(cmapss_comparison, args.out_dir / "fig5_cmapss_non_regression")
+    cmapss_summary = load_json(args.cmapss_summary)
+    if cmapss_summary:
+        cmapss_cross_subset(cmapss_summary, args.out_dir / "fig5b_cmapss_cross_subset")
     cmapss = load_json(args.cmapss_metrics)
     if cmapss and not cmapss_comparison:
         cmapss_distribution(cmapss, args.out_dir / "fig2_cmapss_distribution")
@@ -366,9 +486,11 @@ def main() -> None:
     benchmark = load_json(args.system_benchmark)
     if benchmark:
         system_figure(benchmark, args.out_dir / "fig10_system_performance")
+        schema_quality_figure(benchmark, args.out_dir / "fig11_schema_quality_evidence")
     if args.shap_contributions and args.shap_contributions.exists():
-        shap_figure(args.shap_contributions, args.out_dir / "fig11_shap_explanations")
-    write_summary(result, drift, args.out_dir / "table_reproducible_results.md", cmapss_comparison)
+        shap_figure(args.shap_contributions, args.out_dir / "fig12_shap_explanations")
+    write_summary(result, drift, args.out_dir / "table_reproducible_results.md",
+                  cmapss_comparison, benchmark, cmapss_summary)
     manifest = {"source_files": {key: str(value) if value else None for key, value in vars(args).items() if key != "out_dir"},
                 "rule": "Figures are generated from persisted experiment artefacts; missing optional inputs skip their figures."}
     (args.out_dir / "figure_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

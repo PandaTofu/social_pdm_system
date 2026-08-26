@@ -14,6 +14,13 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def evaluation_label(result: dict) -> str:
+    window = result.get("experiment_windows", {}).get("evaluation")
+    if isinstance(window, list) and len(window) == 2:
+        return f"days {window[0]}-{window[1]}"
+    return "held-out evaluation window"
+
+
 def write_svg(path: Path, width: int, height: int, body: list[str]) -> None:
     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
            '<style>text{font-family:Arial,sans-serif;fill:#1f2937}.title{font-size:20px;font-weight:bold}.label{font-size:14px}.small{font-size:12px}.axis{stroke:#374151;stroke-width:1}.grid{stroke:#d1d5db;stroke-width:1}.box{fill:#e8f1fa;stroke:#4c78a8;stroke-width:1.5}</style>']
@@ -50,7 +57,8 @@ def save_performance_figure(result: dict, output: Path) -> None:
     f1_names = ["Static RF (0.50)", "Adaptive RF (0.50)", "Adaptive RF (calibrated)"]
     f1_values = [result["static_f1_at_0_5"], result["adaptive_f1_at_0_5"], result["adaptive_f1_at_calibrated_threshold"]]
     auc_values = [result["static_aucpr"], result["adaptive_aucpr"]]
-    body = ['<text x="450" y="28" text-anchor="middle" class="title">Held-out performance comparison (days 6-7)</text>']
+    label = evaluation_label(result)
+    body = [f'<text x="450" y="28" text-anchor="middle" class="title">Held-out performance comparison ({html.escape(label)})</text>']
     panels = [(60, 390, "F1 score", f1_names, f1_values, ["#7f7f7f", "#e45756", "#59a14f"], 0.65),
               (500, 810, "AUC-PR", ["Static RF", "Adaptive RF"], auc_values, ["#7f7f7f", "#59a14f"], 0.45)]
     for start, end, title, names, values, colors, maximum in panels:
@@ -79,12 +87,14 @@ def save_architecture_figure(output: Path) -> None:
     for position, _ in nodes[:-1]:
         x = int(position * 1000)
         body.append(f'<line x1="{x + 150}" y1="130" x2="{x + 205}" y2="130" stroke="#4c78a8" stroke-width="2" marker-end="url(#arrow)"/>')
-    body += ['<text x="560" y="225" text-anchor="middle" class="label">Drift detected: use delayed day-5 feedback for retraining and threshold calibration</text>']
+    body += ['<text x="560" y="225" text-anchor="middle" class="label">Drift detected: use delayed feedback for retraining and threshold calibration</text>']
     write_svg(output, 1080, 255, body)
 
 
 def save_table(result: dict, drift: dict, output: Path) -> None:
-    text = f"""# 实验结果汇总\n\n| 指标 | 静态随机森林 | 自适应随机森林 |\n|---|---:|---:|\n| 留出集 F1（部署阈值） | {result['static_f1_at_0_5']:.4f} | {result['adaptive_f1_at_calibrated_threshold']:.4f} |\n| 留出集 AUC-PR | {result['static_aucpr']:.4f} | {result['adaptive_aucpr']:.4f} |\n| 部署阈值 | 0.5000 | {result['adaptive_operating_threshold']:.4f} |\n\n- KS 最大统计量：{drift['max_ks_d']:.4f}；阈值：{drift['threshold']:.2f}；漂移判定：是。\n- 时间切分：第 1–3 天初始训练；第 5 天反馈按事件 ID 进行 70/30 重训/校准划分；第 6–7 天完全留出评估。\n- 自适应模型的第 5 天样本权重为历史样本的 4 倍。\n- F1 的提升为 {result['f1_change_at_operating_threshold']:.4f}；AUC-PR 的提升为 {result['adaptive_aucpr'] - result['static_aucpr']:.4f}。\n"""
+    windows = json.dumps(result.get("experiment_windows", {}), ensure_ascii=False)
+    protocol = result.get("protocol", "使用严格时间切分，并保留独立评估窗口。")
+    text = f"""# 实验结果汇总\n\n| 指标 | 静态随机森林 | 自适应随机森林 |\n|---|---:|---:|\n| 留出集 F1（部署阈值） | {result['static_f1_at_0_5']:.4f} | {result['adaptive_f1_at_calibrated_threshold']:.4f} |\n| 留出集 AUC-PR | {result['static_aucpr']:.4f} | {result['adaptive_aucpr']:.4f} |\n| 部署阈值 | 0.5000 | {result['adaptive_operating_threshold']:.4f} |\n\n- KS 最大统计量：{drift['max_ks_d']:.4f}；阈值：{drift['threshold']:.2f}；漂移判定：是。\n- 时间切分：{protocol}\n- 窗口配置：{windows}。\n- F1 的提升为 {result['f1_change_at_operating_threshold']:.4f}；AUC-PR 的提升为 {result['adaptive_aucpr'] - result['static_aucpr']:.4f}。\n"""
     output.write_text(text, encoding="utf-8")
 
 

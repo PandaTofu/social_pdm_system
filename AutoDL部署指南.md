@@ -126,6 +126,16 @@ H2O 是可选的离线模型训练组件，仍主要使用 CPU。先将 validate
 
 CMAPSS 仍用于方法正确性；模拟后端遥测仍用于领域实用性。E2 在此环境只报告 batch duration、文件摄入率、CPU/memory 与 P95/P99 processing latency，不报告 Kafka lag 或 executor 扩缩容。
 
+修订版正式配置为`configs/scenarios/concept_drift_30d_v3.json`：100台逻辑服务器、5个数据中心、30天、1分钟采样。生成器按日期输出NDJSON分区，模型按连续`experiment_day`读取训练、漂移、反馈和评估窗口。NASA部分使用相同协议依次运行FD001-FD004。
+
+准备完成后可使用统一入口。该命令会实际生成数据和训练模型，运行前应确认磁盘空间：
+
+```bash
+bash autodl/run_revised_paper_experiment.sh \
+  data/CMAPSSData data/autodl_runtime/revised_paper_run \
+  reports/revised_paper_run configs/scenarios/concept_drift_30d_v3.json
+```
+
 ## 6. 运行完整论文实验并生成全部图表
 
 准备好`data/development.ndjson`与`data/CMAPSSData`后执行：

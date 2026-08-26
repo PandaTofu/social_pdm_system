@@ -18,22 +18,19 @@ if [[ ! -f "$CMAPSS_DIR/train_FD001.txt" ]]; then
   exit 2
 fi
 
-python autodl/make_drift_windows.py --source "$SOURCE" --out-dir "$RUN_ROOT/drift_windows"
+python autodl/make_drift_windows.py --source "$SOURCE" --config configs/experiment.yaml --out-dir "$RUN_ROOT/drift_windows"
 python ml/drift_monitor.py \
   --reference "$RUN_ROOT/drift_windows/reference.npz" \
   --current "$RUN_ROOT/drift_windows/current.npz" \
   --threshold 0.20 --alpha 0.05 --out "$RUN_ROOT/drift_report.json"
 
-spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
-  spark/cmapss_classification_comparison.py \
-  --data-dir "$CMAPSS_DIR" --subset FD001 --output-dir "$RUN_ROOT/cmapss" \
-  --horizon 30 --trees 100 --folds 10 \
-  2>&1 | tee logs/cmapss-model-comparison.log
+bash autodl/run_cmapss_all_subsets.sh "$CMAPSS_DIR" "$RUN_ROOT/cmapss"
 
 spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
   ml/adaptive_telemetry_comparison.py \
   --source "$SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
   --drift-report "$RUN_ROOT/drift_report.json" --trees 80 --explain-rows 500 \
+  --generator-config configs/experiment.yaml \
   2>&1 | tee logs/adaptive-comparison.log
 
 spark-submit --master 'local[*]' --conf spark.sql.shuffle.partitions=16 \
@@ -45,6 +42,7 @@ python scripts/generate_complete_paper_figures.py \
   --result "$RUN_ROOT/adaptive_experiment/adaptive_comparison.json" \
   --drift "$RUN_ROOT/drift_report.json" \
   --cmapss-comparison "$RUN_ROOT/cmapss/FD001/classification_comparison/comparison.json" \
+  --cmapss-summary "$RUN_ROOT/cmapss/summary/cmapss_all_subsets.json" \
   --system-benchmark "$RUN_ROOT/system_benchmark.json" \
   --shap-contributions "$RUN_ROOT/adaptive_experiment/shap_alert_explanations.csv" \
   --out-dir "$FIGURES"

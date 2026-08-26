@@ -8,12 +8,14 @@ from pathlib import Path
 from scripts.generate_complete_paper_figures import (
     architecture,
     cmapss_distribution,
+    cmapss_cross_subset,
     cmapss_model_comparison,
     cmapss_non_regression,
     cmapss_pr_comparison,
     cmapss_validation,
     drift_figure,
     model_comparison,
+    schema_quality_figure,
     stability_figure,
     system_figure,
     threshold_figure,
@@ -49,10 +51,16 @@ class FigureSmokeTests(unittest.TestCase):
             "operating_metrics": {"confusion_matrix": {"tn": 35, "fp": 5, "fn": 3, "tp": 7},
                                   "pr_auc": .72},
         }
-        benchmark = {"scaling": [
+        benchmark = {"scope_warning": "single-node only", "scaling": [
             {"processed_rows": 100, "throughput_rows_per_second": 50, "latency_ms": 2000},
-            {"processed_rows": 200, "throughput_rows_per_second": 80, "latency_ms": 2500},
+            {"processed_rows": 200, "accepted_rows": 190, "quarantined_rows": 10,
+             "throughput_rows_per_second": 80, "latency_ms": 2500, "duration_seconds": 2.5},
+        ], "schema_read_comparison": [
+            {"mode": "runtime_inference", "duration_seconds": 2.0, "throughput_rows_per_second": 100},
+            {"mode": "explicit_schema", "duration_seconds": .5, "throughput_rows_per_second": 400},
         ]}
+        benchmark["scaling"][0].update({"accepted_rows": 95, "quarantined_rows": 5,
+                                         "duration_seconds": 2.0})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             predictions = root / "predictions.csv"
@@ -94,14 +102,19 @@ class FigureSmokeTests(unittest.TestCase):
             cmapss_model_comparison(comparison, root / "cmapss_models")
             cmapss_pr_comparison(comparison, comparison_path, root / "cmapss_pr")
             cmapss_non_regression(comparison, root / "cmapss_non_regression")
+            all_subsets = {"subsets": {
+                subset: comparison for subset in ("FD001", "FD002", "FD003", "FD004")
+            }}
+            cmapss_cross_subset(all_subsets, root / "cmapss_cross_subset")
             drift_figure(drift, root / "drift")
             model_comparison(result, root / "models")
             threshold_figure(result, root / "threshold")
             stability_figure(result, root / "stability")
             system_figure(benchmark, root / "system")
-            write_summary(result, drift, root / "summary.md")
-            self.assertEqual(len(list(root.glob("*.png"))), 11)
-            self.assertEqual(len(list(root.glob("*.pdf"))), 11)
+            schema_quality_figure(benchmark, root / "schema_quality")
+            write_summary(result, drift, root / "summary.md", system_benchmark=benchmark)
+            self.assertEqual(len(list(root.glob("*.png"))), 13)
+            self.assertEqual(len(list(root.glob("*.pdf"))), 13)
             self.assertTrue((root / "summary.md").exists())
 
 

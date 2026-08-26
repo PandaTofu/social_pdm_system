@@ -56,7 +56,8 @@ def evaluate(frame: DataFrame, requested_rows: int) -> dict[str, float | int]:
 
 def timed_schema_read(spark: SparkSession, source: Path, explicit: bool) -> dict[str, float | int | str]:
     started = time.perf_counter()
-    reader = spark.read.schema(SCHEMA) if explicit else spark.read
+    reader = (spark.read.option("recursiveFileLookup", "true").schema(SCHEMA)
+              if explicit else spark.read.option("recursiveFileLookup", "true"))
     rows = reader.json(str(source)).count()
     duration = time.perf_counter() - started
     return {
@@ -78,7 +79,7 @@ def main() -> None:
     try:
         # Keep the source uncached so each timed run includes file parsing,
         # validation and scoring rather than measuring an in-memory DataFrame.
-        source = spark.read.schema(SCHEMA).json(str(args.source))
+        source = spark.read.option("recursiveFileLookup", "true").schema(SCHEMA).json(str(args.source))
         available_rows = source.count()
         scaling = [evaluate(source, min(size, available_rows)) for size in sorted(set(args.sizes))]
         schema_read = []

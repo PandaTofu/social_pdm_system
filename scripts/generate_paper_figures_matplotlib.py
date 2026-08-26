@@ -23,6 +23,13 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def evaluation_label(result: dict) -> str:
+    window = result.get("experiment_windows", {}).get("evaluation")
+    if isinstance(window, list) and len(window) == 2:
+        return f"days {window[0]}-{window[1]}"
+    return "held-out window"
+
+
 def save_both(figure: plt.Figure, stem: Path) -> None:
     figure.tight_layout()
     figure.savefig(stem.with_suffix(".png"), dpi=300, bbox_inches="tight")
@@ -52,12 +59,13 @@ def performance_chart(result: dict, stem: Path) -> None:
     f1_values = [result["static_f1_at_0_5"], result["adaptive_f1_at_0_5"],
                  result["adaptive_f1_at_calibrated_threshold"]]
     bars = axes[0].bar(f1_names, f1_values, color=["#7F7F7F", "#E45756", "#59A14F"])
-    axes[0].set(title="Held-out F1 (days 6-7)", ylabel="F1 score", ylim=(0, .65))
+    label = evaluation_label(result)
+    axes[0].set(title=f"Held-out F1 ({label})", ylabel="F1 score", ylim=(0, .65))
     for bar, value in zip(bars, f1_values):
         axes[0].text(bar.get_x() + bar.get_width() / 2, value + .015, f"{value:.3f}", ha="center", fontsize=9)
     auc_values = [result["static_aucpr"], result["adaptive_aucpr"]]
     bars = axes[1].bar(["Static RF", "Adaptive RF"], auc_values, color=["#7F7F7F", "#59A14F"])
-    axes[1].set(title="Ranking quality (days 6-7)", ylabel="AUC-PR", ylim=(0, .45))
+    axes[1].set(title=f"Ranking quality ({label})", ylabel="AUC-PR", ylim=(0, .45))
     for bar, value in zip(bars, auc_values):
         axes[1].text(bar.get_x() + bar.get_width() / 2, value + .012, f"{value:.3f}", ha="center", fontsize=9)
     save_both(figure, stem)

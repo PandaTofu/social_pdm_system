@@ -35,6 +35,7 @@ class Settings:
     precursor_window: int
     incident_windows: list[dict[str, int]]
     concept_drift_strength: float
+    drift_transition_days: int
 
 
 def settings_from(path: Path) -> Settings:
@@ -53,11 +54,20 @@ def settings_from(path: Path) -> Settings:
         precursor_window=int(raw.get("precursor_window_minutes", 90)),
         incident_windows=list(raw.get("incident_windows", [])),
         concept_drift_strength=float(raw.get("concept_drift_strength", 1.0)),
+        drift_transition_days=int(raw.get("drift_transition_days", 0)),
     )
-    if settings.scenario not in {"covariate_shift_v1", "concept_drift_v2"}:
+    if settings.scenario not in {"covariate_shift_v1", "concept_drift_v2", "concept_drift_30d_v3"}:
         raise ValueError(f"Unsupported scenario: {settings.scenario}")
     if settings.precursor_window <= 0 or settings.horizon <= 0:
         raise ValueError("Failure horizon and precursor window must be positive")
+    if settings.interval <= 0 or settings.days <= 0 or settings.logical_servers <= 0:
+        raise ValueError("Sampling interval, days and logical server count must be positive")
+    if not 1 <= settings.schema_v2_start_day <= settings.days:
+        raise ValueError("schema_v2_start_day must fall inside the experiment")
+    if not 1 <= settings.drift_start_day <= settings.days:
+        raise ValueError("drift_start_day must fall inside the experiment")
+    if settings.drift_transition_days < 0:
+        raise ValueError("drift_transition_days cannot be negative")
     return settings
 
 
@@ -110,6 +120,17 @@ def precursor_severity(minutes_remaining: int | None, window: int) -> float:
     return float(np.clip(1.0 - minutes_remaining / window, 0.0, 1.0))
 
 
+def drift_progress(cfg: Settings, minute: int) -> float:
+    """Return a reproducible 0..1 transition from the legacy to new failure regime."""
+    drift_start = (cfg.drift_start_day - 1) * 1440
+    if minute < drift_start:
+        return 0.0
+    if cfg.drift_transition_days == 0:
+        return 1.0
+    transition_minutes = cfg.drift_transition_days * 1440
+    return float(np.clip((minute - drift_start) / transition_minutes, 0.0, 1.0))
+
+
 def records(cfg: Settings) -> Iterable[dict[str, Any]]:
     rng = np.random.default_rng(cfg.seed)
     total_minutes = cfg.days * 1440
@@ -118,7 +139,7 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
     server_cpu = rng.uniform(35, 58, cfg.logical_servers)
     server_mem = rng.uniform(40, 66, cfg.logical_servers)
     incidents = incident_schedule(cfg, rng, total_minutes)
-    for minute in range(total_minutes):
+    for minute in range(0, total_minutes, cfg.interval):
         ts = cfg.start_time + timedelta(minutes=minute)
         day = minute // 1440 + 1
         hour = (minute % 1440) / 60
@@ -130,7 +151,8 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
             lead = minutes_to_next_incident(incidents[server], minute, cfg.precursor_window)
             near_incident = lead is not None
             severity = precursor_severity(lead, cfg.precursor_window)
-            drift = day >= cfg.drift_start_day
+            drift_fraction = drift_progress(cfg, minute)
+            drift = drift_fraction > 0
             request_rate = max(1.0, rng.negative_binomial(24, 24 / (24 + 160 * daily * burst)))
             cpu = np.clip(server_cpu[server] + 0.075 * request_rate + dc_shock[dc] + rng.normal(0, 5), 0, 100)
             memory = np.clip(server_mem[server] + 0.025 * request_rate + rng.normal(0, 4), 0, 100)
@@ -139,19 +161,17 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
             if near_incident and cfg.scenario == "covariate_shift_v1":
                 cpu = min(100, cpu + rng.uniform(15, 30)); queue += rng.uniform(45, 100)
                 disk_incident_shift = 12.0
-            elif near_incident and not drift:
-                # Before deployment, resource saturation is the dominant precursor.
-                strength = cfg.concept_drift_strength
-                cpu = min(100, cpu + 28 * severity * strength)
-                queue += 80 * severity * strength
-                disk_incident_shift = 15 * severity * strength
             elif near_incident:
-                # After deployment, old resource signals weaken and application
-                # errors/latency become dominant: a controlled change in P(y|X).
+                # Gradually transfer failure evidence from resource saturation
+                # to application latency/errors, creating a controlled P(y|X)
+                # change without a discontinuity at the drift boundary.
                 strength = cfg.concept_drift_strength
-                cpu = min(100, cpu + 4 * severity * strength)
-                queue += 12 * severity * strength
-                disk_incident_shift = 3 * severity * strength
+                cpu_shift = 28 * (1 - drift_fraction) + 4 * drift_fraction
+                queue_shift = 80 * (1 - drift_fraction) + 12 * drift_fraction
+                disk_shift = 15 * (1 - drift_fraction) + 3 * drift_fraction
+                cpu = min(100, cpu + cpu_shift * severity * strength)
+                queue += queue_shift * severity * strength
+                disk_incident_shift = disk_shift * severity * strength
             response_p50 = float(rng.lognormal(4.15, .32) * (1 + queue / 120))
             response_p95 = response_p50 * float(rng.lognormal(.7, .22))
             # Deployment changes the relationship between app metrics and risk.
@@ -161,13 +181,15 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                 if drift:
                     response_p95 *= 1.17; error_rate = min(1.0, error_rate * 1.7)
             else:
-                post_signal = 16 * severity * cfg.concept_drift_strength if drift else 0.5 * severity
+                post_signal = ((0.5 * (1 - drift_fraction) + 16 * drift_fraction)
+                               * severity * cfg.concept_drift_strength)
                 error_rate = float(np.clip(rng.beta(1.2 + post_signal, 145), 0, 1))
                 if drift:
                     # Retain a detectable deployment-wide covariate shift while
                     # the conditional incident signal above creates concept drift.
-                    response_p95 *= 1.17 * (1 + 2.2 * severity * cfg.concept_drift_strength)
-                    error_rate = min(1.0, error_rate * 1.7)
+                    response_p95 *= ((1 + .17 * drift_fraction)
+                                     * (1 + 2.2 * severity * cfg.concept_drift_strength * drift_fraction))
+                    error_rate = min(1.0, error_rate * (1 + .7 * drift_fraction))
             event: dict[str, Any] = {
                 "event_id": str(uuid4()), "event_time": iso(ts), "ingest_time": iso(ts + timedelta(seconds=int(rng.integers(0, 8)))),
                 "schema_version": 2 if day >= cfg.schema_v2_start_day else 1,
@@ -201,17 +223,30 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                 yield dict(event)
 
 
-def publish(rows: Iterable[dict[str, Any]], output: Path | None, bootstrap: str | None) -> int:
+def publish(rows: Iterable[dict[str, Any]], output: Path | None,
+            output_dir: Path | None, bootstrap: str | None) -> int:
     producer = None
     handle = None
+    current_partition = None
     if output:
         output.parent.mkdir(parents=True, exist_ok=True); handle = output.open("w", encoding="utf-8")
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
     if bootstrap:
         from kafka import KafkaProducer
         producer = KafkaProducer(bootstrap_servers=bootstrap, value_serializer=lambda x: json.dumps(x).encode("utf-8"))
     count = 0
     try:
         for row in rows:
+            if output_dir:
+                partition = row["event_time"][:10]
+                if partition != current_partition:
+                    if handle:
+                        handle.close()
+                    partition_dir = output_dir / f"event_date={partition}"
+                    partition_dir.mkdir(parents=True, exist_ok=True)
+                    handle = (partition_dir / "part-00000.ndjson").open("w", encoding="utf-8")
+                    current_partition = partition
             if handle: handle.write(json.dumps(row) + "\n")
             if producer: producer.send("telemetry-raw", key=row["server_id"].encode("utf-8"), value=row)
             count += 1
@@ -225,12 +260,19 @@ def publish(rows: Iterable[dict[str, Any]], output: Path | None, bootstrap: str 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path)
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--output", type=Path, help="legacy single NDJSON output")
+    output.add_argument("--output-dir", type=Path, help="daily partitioned NDJSON root")
     parser.add_argument("--kafka-bootstrap")
     args = parser.parse_args()
-    if not args.output and not args.kafka_bootstrap: parser.error("choose --output and/or --kafka-bootstrap")
-    count = publish(records(settings_from(args.config)), args.output, args.kafka_bootstrap)
-    print(json.dumps({"events_written": count, "output": str(args.output) if args.output else None}, ensure_ascii=False))
+    if not args.output and not args.output_dir and not args.kafka_bootstrap:
+        parser.error("choose --output, --output-dir and/or --kafka-bootstrap")
+    count = publish(records(settings_from(args.config)), args.output, args.output_dir, args.kafka_bootstrap)
+    print(json.dumps({
+        "events_written": count,
+        "output": str(args.output) if args.output else None,
+        "output_dir": str(args.output_dir) if args.output_dir else None,
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":
