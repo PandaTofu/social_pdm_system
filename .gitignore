@@ -17,6 +17,7 @@ raw_runs.csv
 # Python and Spark local state
 .venv*/
 .uv-cache*/
+.runtime/
 __pycache__/
 *.py[cod]
 .pytest_cache/

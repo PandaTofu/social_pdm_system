@@ -49,12 +49,19 @@ KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
 
 "$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
   --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \
-  ml/adaptive_telemetry_comparison.py \
+  ml/prepare_adaptive_telemetry.py \
   --source "$SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
-  --drift-report "$RUN_ROOT/drift_report.json" --trees 80 --explain-rows 500 \
+  --drift-report "$RUN_ROOT/drift_report.json" \
   --scenario-name concept_drift_30d_v3 --generator-config "$CONFIG" \
+  2>&1 | tee logs/concept-drift-30d-spark-prepare.log
+
+# Run H2O as a new ordinary Python process.  The spark-submit JVM above has
+# exited before H2O starts, which materially lowers peak RAM on small hosts.
+"$PYTHON_BIN" ml/train_adaptive_h2o.py \
+  --prepared-manifest "$RUN_ROOT/adaptive_experiment/prepared_manifest.json" \
+  --trees 80 --explain-rows 500 \
   --h2o-memory "$H2O_MEMORY" --h2o-threads "$H2O_THREADS" \
-  2>&1 | tee logs/concept-drift-30d-adaptive-comparison.log
+  2>&1 | tee logs/concept-drift-30d-h2o-training.log
 
 "$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
   --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \

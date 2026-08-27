@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 import numpy as np
 
@@ -131,6 +131,18 @@ def drift_progress(cfg: Settings, minute: int) -> float:
     return float(np.clip((minute - drift_start) / transition_minutes, 0.0, 1.0))
 
 
+def deterministic_event_id(cfg: Settings, minute: int, server: int) -> str:
+    """Return a stable event identifier for a logical observation.
+
+    The feedback/calibration split hashes ``event_id``.  Random UUID4 values
+    therefore made nominally seeded scenario regenerations produce slightly
+    different model inputs.  UUID5 keeps IDs unique while making the complete
+    experiment reproducible from its scenario configuration.
+    """
+    key = f"social-pdm:{cfg.scenario}:{cfg.seed}:{minute}:{server}"
+    return str(uuid5(NAMESPACE_URL, key))
+
+
 def records(cfg: Settings) -> Iterable[dict[str, Any]]:
     rng = np.random.default_rng(cfg.seed)
     total_minutes = cfg.days * 1440
@@ -191,7 +203,8 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                                      * (1 + 2.2 * severity * cfg.concept_drift_strength * drift_fraction))
                     error_rate = min(1.0, error_rate * (1 + .7 * drift_fraction))
             event: dict[str, Any] = {
-                "event_id": str(uuid4()), "event_time": iso(ts), "ingest_time": iso(ts + timedelta(seconds=int(rng.integers(0, 8)))),
+                "event_id": deterministic_event_id(cfg, minute, server),
+                "event_time": iso(ts), "ingest_time": iso(ts + timedelta(seconds=int(rng.integers(0, 8)))),
                 "schema_version": 2 if day >= cfg.schema_v2_start_day else 1,
                 "data_center_id": f"dc-{dc+1:02d}", "rack_id": f"rack-{server // 10 + 1:02d}",
                 "server_id": f"dc-{dc+1:02d}-srv-{server+1:03d}", "service_name": ("feed" if server % 3 else "messaging"),
