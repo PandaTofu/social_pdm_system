@@ -56,7 +56,9 @@ def settings_from(path: Path) -> Settings:
         concept_drift_strength=float(raw.get("concept_drift_strength", 1.0)),
         drift_transition_days=int(raw.get("drift_transition_days", 0)),
     )
-    if settings.scenario not in {"covariate_shift_v1", "concept_drift_v2", "concept_drift_30d_v3"}:
+    if settings.scenario not in {
+        "covariate_shift_v1", "concept_drift_v2", "concept_drift_30d_v3", "concept_drift_30d_v4"
+    }:
         raise ValueError(f"Unsupported scenario: {settings.scenario}")
     if settings.precursor_window <= 0 or settings.horizon <= 0:
         raise ValueError("Failure horizon and precursor window must be positive")

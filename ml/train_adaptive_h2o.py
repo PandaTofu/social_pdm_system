@@ -9,6 +9,7 @@ from pathlib import Path
 import h2o
 
 from adaptive_telemetry_comparison import (
+    BASE_FEATURES,
     binary_summary,
     select_f1_threshold,
     stability_by_window,
@@ -41,22 +42,28 @@ def main() -> None:
     evaluation_days = tuple(windows["evaluation"])
     train_days = tuple(windows["initial_train"])
     drift_detected = bool(manifest["drift_detected"])
+    feature_columns = list(manifest.get("feature_columns", BASE_FEATURES))
+    feedback_split_key = str(manifest.get("feedback_split_key", "event_id"))
 
     h2o.init(ip="127.0.0.1", port=args.h2o_port,
              max_mem_size=args.h2o_memory, nthreads=args.h2o_threads)
     try:
-        static_model = train_h2o(csv_paths["pre_drift_train"], args.trees)
+        static_model = train_h2o(csv_paths["pre_drift_train"], args.trees,
+                                 feature_columns=feature_columns)
         evaluation_frame = h2o.import_file(str(csv_paths["evaluation"]))
         static_performance = static_model.model_performance(evaluation_frame)
         retrained_summary = None
         if drift_detected and not args.skip_ablation:
-            retrained_model = train_h2o(csv_paths["adaptive_train"], args.trees, use_recency_weight=False)
+            retrained_model = train_h2o(csv_paths["adaptive_train"], args.trees,
+                                        use_recency_weight=False,
+                                        feature_columns=feature_columns)
             try:
                 retrained_summary = binary_summary(retrained_model.model_performance(evaluation_frame), 0.5)
             finally:
                 h2o.remove(retrained_model.model_id)
         adaptive_model = train_h2o(
-            csv_paths["adaptive_train"], args.trees, use_recency_weight=drift_detected
+            csv_paths["adaptive_train"], args.trees,
+            use_recency_weight=drift_detected, feature_columns=feature_columns,
         )
         adaptive_performance = adaptive_model.model_performance(evaluation_frame)
         calibration_frame = h2o.import_file(str(csv_paths["feedback_calibration"]))
@@ -87,13 +94,16 @@ def main() -> None:
             "experiment_start": manifest["experiment_start"],
             "experiment_windows": windows,
             "protocol": (f"train days {train_days[0]}-{train_days[1]}; KS-triggered feedback days "
-                         f"{feedback_days[0]}-{feedback_days[1]} split 70/30 for retraining/calibration; "
+                         f"{feedback_days[0]}-{feedback_days[1]} hashed 70/30 by {feedback_split_key} "
+                         "for retraining/calibration; "
                          f"evaluate held-out days {evaluation_days[0]}-{evaluation_days[1]}"),
             "class_balance_policy": "keep all positives and deterministically sample 8% of training negatives; H2O balance_classes disabled for every variant",
             "drift_detected": drift_detected,
             "retrain_triggered": drift_detected,
             "drift_monitor": manifest["drift_monitor"],
             "trees": args.trees,
+            "feature_columns": feature_columns,
+            "feedback_split_key": feedback_split_key,
             "h2o_runtime": {"max_memory": args.h2o_memory, "threads": args.h2o_threads},
             "pre_drift_train": counts["pre_drift_train"],
             "adaptive_train": counts["adaptive_train"],

@@ -16,6 +16,19 @@ from apps.generate_telemetry import (
 
 
 class GeneratorScenarioTests(unittest.TestCase):
+    def test_v4_protocol_aligns_feedback_and_evaluation_incident_rates(self):
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "scenarios" / "concept_drift_30d_v4.json"
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        settings = settings_from(config_path)
+        self.assertEqual(settings.scenario, "concept_drift_30d_v4")
+        self.assertTrue(raw["history_features"])
+        self.assertEqual(raw["feedback_split_key"], "server_id")
+        feedback_days = raw["experiment_windows"]["feedback"]
+        evaluation_days = raw["experiment_windows"]["evaluation"]
+        feedback_rate = 1 / (feedback_days[1] - feedback_days[0] + 1)
+        evaluation_rate = 2 / (evaluation_days[1] - evaluation_days[0] + 1)
+        self.assertLess(abs(feedback_rate - evaluation_rate) / evaluation_rate, 0.15)
+
     def test_concept_scenario_has_phase_stratified_incidents(self):
         config = {
             "scenario": "concept_drift_v2", "seed": 7,

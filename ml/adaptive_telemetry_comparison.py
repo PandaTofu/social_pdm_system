@@ -19,6 +19,7 @@ import h2o
 from h2o.estimators.random_forest import H2ORandomForestEstimator
 from pyspark import StorageLevel
 from pyspark.sql import DataFrame, SparkSession, functions as F
+from pyspark.sql.window import Window
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -27,9 +28,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from spark.streaming_job import SCHEMA, classify
 from ml.h2o_binary_metrics import binary_summary, threshold_curve
 
-FEATURES = ["cpu_util_pct", "memory_util_pct", "disk_util_pct", "disk_iops", "disk_queue_depth",
-            "network_in_mbps", "network_out_mbps", "request_rate_rps", "response_p50_ms",
-            "response_p95_ms", "error_rate", "timeout_rate", "queue_depth", "active_connections"]
+BASE_FEATURES = ["cpu_util_pct", "memory_util_pct", "disk_util_pct", "disk_iops", "disk_queue_depth",
+                 "network_in_mbps", "network_out_mbps", "request_rate_rps", "response_p50_ms",
+                 "response_p95_ms", "error_rate", "timeout_rate", "queue_depth", "active_connections"]
+HISTORY_FEATURES = [
+    "error_rate_mean_5m", "error_rate_mean_15m", "error_rate_max_15m", "error_rate_delta_15m",
+    "response_p95_mean_5m", "response_p95_mean_15m", "response_p95_delta_15m",
+    "timeout_rate_mean_15m", "queue_depth_mean_15m", "cpu_util_mean_15m",
+]
+FEATURES = BASE_FEATURES
 TARGET = "failure_within_30min"
 DEFAULT_WINDOWS = {
     "initial_train": [1, 3],
@@ -52,14 +59,33 @@ def spark_session() -> SparkSession:
     return session
 
 
+def add_history_features(frame: DataFrame) -> DataFrame:
+    """Add past-only rolling features without using future observations."""
+    order_seconds = F.col("event_time").cast("long")
+    window_5m = Window.partitionBy("server_id").orderBy(order_seconds).rangeBetween(-4 * 60, 0)
+    window_15m = Window.partitionBy("server_id").orderBy(order_seconds).rangeBetween(-14 * 60, 0)
+    return (frame
+            .withColumn("error_rate_mean_5m", F.avg("error_rate").over(window_5m))
+            .withColumn("error_rate_mean_15m", F.avg("error_rate").over(window_15m))
+            .withColumn("error_rate_max_15m", F.max("error_rate").over(window_15m))
+            .withColumn("error_rate_delta_15m", F.col("error_rate") - F.col("error_rate_mean_15m"))
+            .withColumn("response_p95_mean_5m", F.avg("response_p95_ms").over(window_5m))
+            .withColumn("response_p95_mean_15m", F.avg("response_p95_ms").over(window_15m))
+            .withColumn("response_p95_delta_15m", F.col("response_p95_ms") - F.col("response_p95_mean_15m"))
+            .withColumn("timeout_rate_mean_15m", F.avg("timeout_rate").over(window_15m))
+            .withColumn("queue_depth_mean_15m", F.avg("queue_depth").over(window_15m))
+            .withColumn("cpu_util_mean_15m", F.avg("cpu_util_pct").over(window_15m)))
+
+
 def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
-               add_recency_weight: bool = False,
+               feature_columns: list[str] | None = None, add_recency_weight: bool = False,
                recent_days: tuple[int, int] = (5, 5),
                recency_weight: float = 4.0) -> tuple[Path, int, int]:
     # Context columns are excluded from model features but retained so sampled
     # alerts can be traced back to a logical server and event time.
-    selected = frame.select("event_id", "event_time", "server_id", *FEATURES, TARGET, "day").dropna(
-        subset=FEATURES + [TARGET]
+    model_features = feature_columns or FEATURES
+    selected = frame.select("event_id", "event_time", "server_id", *model_features, TARGET, "day").dropna(
+        subset=model_features + [TARGET]
     )
     if balance_sample:
         # Keep every scarce positive row; sample only negatives before H2O's
@@ -80,7 +106,8 @@ def export_csv(frame: DataFrame, path: Path, balance_sample: bool,
     return next(path.glob("part-*.csv")), total, positives
 
 
-def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
+def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False,
+              feature_columns: list[str] | None = None):
     frame = h2o.import_file(str(csv_path))
     frame[TARGET] = frame[TARGET].asfactor()
     model = H2ORandomForestEstimator(ntrees=trees, max_depth=20, min_rows=5,
@@ -89,7 +116,7 @@ def train_h2o(csv_path: Path, trees: int, use_recency_weight: bool = False):
                                      # deterministic negative downsampling.
                                      balance_classes=False, seed=20260824)
     try:
-        model.train(x=FEATURES, y=TARGET, training_frame=frame,
+        model.train(x=feature_columns or FEATURES, y=TARGET, training_frame=frame,
                     weights_column="sample_weight" if use_recency_weight else None)
     finally:
         h2o.remove(frame.frame_id)

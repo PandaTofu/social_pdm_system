@@ -1,0 +1,46 @@
+{
+  "scenario": "concept_drift_30d_v4",
+  "seed": 20260827,
+  "start_time": "2025-01-01T00:00:00Z",
+  "logical_servers": 100,
+  "days": 30,
+  "sample_interval_minutes": 1,
+  "data_centers": 5,
+  "schema_v2_start_day": 11,
+  "drift_start_day": 15,
+  "drift_transition_days": 3,
+  "failure_horizon_minutes": 30,
+  "precursor_window_minutes": 30,
+  "concept_drift_strength": 1.0,
+  "history_features": true,
+  "feedback_split_key": "server_id",
+  "drift_detection": {
+    "method": "two-sample KS with effect-size and significance gates",
+    "ks_threshold": 0.10,
+    "alpha": 0.05
+  },
+  "experiment_windows": {
+    "initial_train": [1, 10],
+    "drift_reference": [1, 10],
+    "drift_current": [15, 17],
+    "feedback": [18, 21],
+    "evaluation": [22, 30],
+    "stability_window_days": 2,
+    "recency_weight": 4.0
+  },
+  "incident_windows": [
+    {"start_day": 1, "end_day": 5},
+    {"start_day": 6, "end_day": 10},
+    {"start_day": 15, "end_day": 17},
+    {"start_day": 18, "end_day": 21},
+    {"start_day": 22, "end_day": 25},
+    {"start_day": 26, "end_day": 30}
+  ],
+  "quality_error_rate": 0.02,
+  "late_event_rate": 0.01,
+  "duplicate_rate": 0.005,
+  "burst_windows": [
+    {"start_day": 7, "start_hour": 18, "duration_minutes": 60, "multiplier": 5},
+    {"start_day": 24, "start_hour": 20, "duration_minutes": 30, "multiplier": 10}
+  ]
+}

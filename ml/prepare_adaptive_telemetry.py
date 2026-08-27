@@ -11,9 +11,17 @@ import json
 import time
 from pathlib import Path
 
+from pyspark import StorageLevel
 from pyspark.sql import functions as F
 
-from adaptive_telemetry_comparison import export_csv, resolve_windows, spark_session
+from adaptive_telemetry_comparison import (
+    BASE_FEATURES,
+    HISTORY_FEATURES,
+    add_history_features,
+    export_csv,
+    resolve_windows,
+    spark_session,
+)
 from spark.streaming_job import SCHEMA, classify
 
 
@@ -52,8 +60,14 @@ def main() -> None:
     evaluation_days = tuple(windows["evaluation"])
     configured_start = str(generator_config.get("start_time", ""))[:10]
     experiment_start = args.experiment_start or configured_start or None
+    history_features_enabled = bool(generator_config.get("history_features", False))
+    feature_columns = BASE_FEATURES + HISTORY_FEATURES if history_features_enabled else BASE_FEATURES
+    feedback_split_key = str(generator_config.get("feedback_split_key", "event_id"))
+    if feedback_split_key not in {"event_id", "server_id"}:
+        raise ValueError("feedback_split_key must be event_id or server_id")
 
     spark = spark_session()
+    data = None
     try:
         data = (classify(spark.read.schema(SCHEMA).option("recursiveFileLookup", "true").json(str(args.source)))
                 .filter("is_valid").dropDuplicates(["event_id"]))
@@ -63,32 +77,44 @@ def main() -> None:
         data = data.withColumn(
             "day", F.datediff(F.to_date("event_time"), F.lit(experiment_start).cast("date")) + F.lit(1)
         )
+        if history_features_enabled:
+            data = add_history_features(data)
+        # Four experiment branches reuse the same sorted rolling features.
+        data = data.persist(StorageLevel.MEMORY_AND_DISK)
+        materialized_rows = data.count()
         pre = data.filter(F.col("day").between(*train_days))
         drift_feedback = data.filter(F.col("day").between(*feedback_days))
-        feedback_train = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) < 7)
-        feedback_calibration = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) >= 7)
+        split_bucket = F.pmod(F.xxhash64(feedback_split_key), F.lit(10))
+        feedback_train = drift_feedback.filter(split_bucket < 7)
+        feedback_calibration = drift_feedback.filter(split_bucket >= 7)
         adaptive_training = pre.unionByName(feedback_train) if drift_detected else pre
         evaluation = data.filter(F.col("day").between(*evaluation_days))
 
         pre_csv, pre_rows, pre_positive = export_csv(
-            pre, args.output_dir / "prepared" / "pre_drift_train", True
+            pre, args.output_dir / "prepared" / "pre_drift_train", True,
+            feature_columns=feature_columns,
         )
         adaptive_csv, adaptive_rows, adaptive_positive = export_csv(
             adaptive_training, args.output_dir / "prepared" / "adaptive_train", True,
+            feature_columns=feature_columns,
             add_recency_weight=drift_detected, recent_days=feedback_days,
             recency_weight=float(windows["recency_weight"]),
         )
         calibration_csv, calibration_rows, calibration_positive = export_csv(
-            feedback_calibration, args.output_dir / "prepared" / "feedback_calibration", False
+            feedback_calibration, args.output_dir / "prepared" / "feedback_calibration", False,
+            feature_columns=feature_columns,
         )
         eval_csv, eval_rows, eval_positive = export_csv(
-            evaluation, args.output_dir / "prepared" / "evaluation", False
+            evaluation, args.output_dir / "prepared" / "evaluation", False,
+            feature_columns=feature_columns,
         )
     finally:
+        if data is not None:
+            data.unpersist()
         spark.stop()
 
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "scenario": args.scenario_name,
         "generator_config": generator_config or None,
         "experiment_start": experiment_start,
@@ -96,6 +122,10 @@ def main() -> None:
         "drift_detected": drift_detected,
         "drift_monitor": drift_report,
         "source_partitions": source_partitions,
+        "materialized_rows": materialized_rows,
+        "feature_columns": feature_columns,
+        "history_features_enabled": history_features_enabled,
+        "feedback_split_key": feedback_split_key,
         "csv_paths": {
             "pre_drift_train": relative_csv(pre_csv, args.output_dir),
             "adaptive_train": relative_csv(adaptive_csv, args.output_dir),

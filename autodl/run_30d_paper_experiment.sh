@@ -34,6 +34,8 @@ DRIVER_MEMORY="${PDM_DRIVER_MEMORY:-512m}"
 SHUFFLE_PARTITIONS="${PDM_SHUFFLE_PARTITIONS:-4}"
 H2O_MEMORY="${PDM_H2O_MEMORY:-1G}"
 H2O_THREADS="${PDM_H2O_THREADS:-1}"
+TREES="${PDM_TREES:-80}"
+SCENARIO_NAME="${PDM_SCENARIO_NAME:-concept_drift_30d_v3}"
 KS_THRESHOLD="${PDM_KS_THRESHOLD:-0.10}"
 KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
 
@@ -52,14 +54,14 @@ KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
   ml/prepare_adaptive_telemetry.py \
   --source "$SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
   --drift-report "$RUN_ROOT/drift_report.json" \
-  --scenario-name concept_drift_30d_v3 --generator-config "$CONFIG" \
+  --scenario-name "$SCENARIO_NAME" --generator-config "$CONFIG" \
   2>&1 | tee logs/concept-drift-30d-spark-prepare.log
 
 # Run H2O as a new ordinary Python process.  The spark-submit JVM above has
 # exited before H2O starts, which materially lowers peak RAM on small hosts.
 "$PYTHON_BIN" ml/train_adaptive_h2o.py \
   --prepared-manifest "$RUN_ROOT/adaptive_experiment/prepared_manifest.json" \
-  --trees 80 --explain-rows 500 \
+  --trees "$TREES" --explain-rows 500 \
   --h2o-memory "$H2O_MEMORY" --h2o-threads "$H2O_THREADS" \
   2>&1 | tee logs/concept-drift-30d-h2o-training.log
 
