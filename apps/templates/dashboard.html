@@ -24,6 +24,13 @@
     th { color:var(--muted); font-size:12px; text-transform:uppercase; }
     .ok { color:var(--green); } .warn { color:var(--red); }
     .pill { display:inline-block; margin:2px 5px 2px 0; padding:2px 7px; border-radius:20px; background:#eaf1f5; font-size:12px; }
+    .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:18px; margin-top:18px; }
+    .charts section { margin-top:0; }
+    .bar-row { display:grid; grid-template-columns:minmax(120px,1.4fr) 3fr 54px; gap:9px; align-items:center; margin:9px 0; }
+    .bar-track { height:13px; border-radius:8px; background:#edf2f5; overflow:hidden; }
+    .bar-fill { height:100%; min-width:2px; border-radius:8px; background:var(--blue); }
+    .bar-fill.green { background:var(--green); }
+    .scope { margin-top:18px; padding:12px 15px; border-left:4px solid var(--blue); background:#eaf1f5; color:#42515e; }
     #notice { margin-top:14px; color:var(--muted); }
   </style>
 </head>
@@ -38,24 +45,39 @@
     <div class="card"><div class="label">Operating threshold</div><div class="value" id="threshold">-</div></div>
   </div>
   <div id="notice">Loading persisted experiment artefacts...</div>
+  <div class="scope">Prototype scope: persisted experiment evidence with optional Structured Streaming progress metrics. Missing live metrics are shown as unavailable rather than estimated.</div>
+  <div class="charts">
+    <section><h2>Model F1 comparison</h2><div id="model-chart"></div></section>
+    <section><h2>Global TreeSHAP importance</h2><div id="shap-chart"></div></section>
+  </div>
   <section><h2>Model variants</h2><table><thead><tr><th>Variant</th><th>Precision</th><th>Recall</th><th>F1</th><th>PR-AUC</th><th>Threshold</th></tr></thead><tbody id="variants"></tbody></table></section>
   <section><h2>Explained alerts</h2><table><thead><tr><th>Event</th><th>Time</th><th>Server</th><th>Failure probability</th><th>Top TreeSHAP contributors</th></tr></thead><tbody id="alerts"></tbody></table></section>
 </main>
 <script>
 const fmt=(value,digits=3)=>value===null||value===undefined?"-":Number(value).toFixed(digits);
-fetch("/api/status").then(r=>r.json()).then(data=>{
+const bars=(target,rows,valueKey,labelKey,color="")=>{
+  const max=Math.max(...rows.map(x=>Number(x[valueKey])||0),0.000001);
+  document.querySelector(target).innerHTML=rows.map(x=>`<div class="bar-row"><span>${x[labelKey]}</span><div class="bar-track"><div class="bar-fill ${color}" style="width:${100*(Number(x[valueKey])||0)/max}%"></div></div><strong>${fmt(x[valueKey])}</strong></div>`).join("");
+};
+const refresh=()=>fetch("/api/status").then(r=>r.json()).then(data=>{
   const stream=data.stream||{}, drift=data.drift||{}, variants=(data.model||{}).variants||{};
   document.querySelector("#batch").textContent=stream.batch_id??"-";
   document.querySelector("#rate").textContent=stream.processing_rows_per_second?Math.round(stream.processing_rows_per_second).toLocaleString()+" r/s":"-";
   document.querySelector("#drift").textContent=fmt(drift.max_ks_d);
   document.querySelector("#f1").textContent=fmt((variants.full_adaptive||{}).f1);
   document.querySelector("#threshold").textContent=fmt((data.model||{}).threshold);
-  document.querySelector("#notice").textContent="Availability: "+Object.entries(data.availability).map(([k,v])=>`${k}=${v}`).join(" | ");
+  document.querySelector("#notice").textContent="Availability: "+Object.entries(data.availability).map(([k,v])=>`${k}=${v}`).join(" | ")+" | refreshed="+data.generated_at;
   const body=document.querySelector("#variants");
+  body.innerHTML="";
   Object.entries(variants).forEach(([name,m])=>body.insertAdjacentHTML("beforeend",`<tr><td>${name}</td><td>${fmt(m.precision)}</td><td>${fmt(m.recall)}</td><td>${fmt(m.f1)}</td><td>${fmt(m.pr_auc)}</td><td>${fmt(m.threshold)}</td></tr>`));
+  bars("#model-chart",Object.entries(variants).map(([name,m])=>({name,f1:m.f1})),"f1","name","green");
+  bars("#shap-chart",(data.model||{}).global_shap||[],"mean_abs_shap","feature");
   const alerts=document.querySelector("#alerts");
+  alerts.innerHTML="";
   data.alerts.forEach(a=>alerts.insertAdjacentHTML("beforeend",`<tr><td>${a.event_id}</td><td>${a.event_time}</td><td>${a.server_id}</td><td>${fmt(a.probability)}</td><td>${a.top_contributors.map(x=>`<span class="pill">${x.feature}: ${fmt(x.value)}</span>`).join("")}</td></tr>`));
 }).catch(error=>document.querySelector("#notice").textContent="Dashboard data unavailable: "+error);
+refresh();
+setInterval(refresh,15000);
 </script>
 </body>
 </html>

@@ -22,7 +22,6 @@ def load_json(path: Path | None) -> dict[str, Any] | None:
 def save(figure: plt.Figure, output: Path) -> None:
     figure.tight_layout()
     figure.savefig(output.with_suffix(".png"), dpi=300, bbox_inches="tight")
-    figure.savefig(output.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(figure)
 
 
@@ -492,9 +491,10 @@ def main() -> None:
     write_summary(result, drift, args.out_dir / "table_reproducible_results.md",
                   cmapss_comparison, benchmark, cmapss_summary)
     manifest = {"source_files": {key: str(value) if value else None for key, value in vars(args).items() if key != "out_dir"},
+                "output_format": "PNG only",
                 "rule": "Figures are generated from persisted experiment artefacts; missing optional inputs skip their figures."}
     (args.out_dir / "figure_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"Auditable PNG/PDF figures written to {args.out_dir}")
+    print(f"Auditable PNG figures written to {args.out_dir}")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,30 @@ def alert_rows(limit: int = 20) -> list[dict[str, Any]]:
     return alerts
 
 
+def global_shap(limit: int = 10) -> list[dict[str, float | str]]:
+    """Return mean absolute TreeSHAP contributions from persisted alert rows."""
+    if not ALERTS.exists():
+        return []
+    excluded = {"event_id", "event_time", "server_id", "failure_within_30min", "predict", "p0", "p1", "BiasTerm"}
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    with ALERTS.open(encoding="utf-8-sig", newline="") as source:
+        for row in csv.DictReader(source):
+            for name, value in row.items():
+                if name in excluded or value in (None, ""):
+                    continue
+                try:
+                    totals[name] = totals.get(name, 0.0) + abs(float(value))
+                    counts[name] = counts.get(name, 0) + 1
+                except ValueError:
+                    continue
+    ranked = sorted(
+        ((name, totals[name] / counts[name]) for name in totals if counts[name]),
+        key=lambda item: item[1], reverse=True,
+    )[:limit]
+    return [{"feature": name, "mean_abs_shap": value} for name, value in ranked]
+
+
 @app.get("/")
 def index():
     return render_template("dashboard.html")
@@ -89,6 +114,7 @@ def status():
     drift = read_json(DRIFT_REPORT)
     stream = latest_stream_metric()
     return jsonify({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "availability": {
             "adaptive_report": adaptive is not None,
             "drift_report": drift is not None,
@@ -103,6 +129,8 @@ def status():
             "threshold": adaptive.get("adaptive_operating_threshold") if adaptive else None,
             "retrain_triggered": adaptive.get("retrain_triggered") if adaptive else None,
             "shap": adaptive.get("shap_explanations") if adaptive else None,
+            "stability": adaptive.get("post_drift_daily_stability") if adaptive else None,
+            "global_shap": global_shap(),
         },
         "alerts": alert_rows(),
     })

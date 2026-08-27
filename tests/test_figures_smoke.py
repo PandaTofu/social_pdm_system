@@ -114,7 +114,7 @@ class FigureSmokeTests(unittest.TestCase):
             schema_quality_figure(benchmark, root / "schema_quality")
             write_summary(result, drift, root / "summary.md", system_benchmark=benchmark)
             self.assertEqual(len(list(root.glob("*.png"))), 13)
-            self.assertEqual(len(list(root.glob("*.pdf"))), 13)
+            self.assertEqual(len(list(root.glob("*.pdf"))), 0)
             self.assertTrue((root / "summary.md").exists())
 
 
