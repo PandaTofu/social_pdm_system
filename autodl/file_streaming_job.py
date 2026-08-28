@@ -71,8 +71,10 @@ def process_batch(batch: DataFrame, batch_id: int) -> None:
 def main() -> None:
     Path(INBOX).mkdir(parents=True, exist_ok=True)
     spark = session()
+    # Duplicate rows must reach foreachBatch so they are counted and written to
+    # the quarantine evidence rather than disappearing before quality scoring.
     source = (spark.readStream.schema(SCHEMA).option("maxFilesPerTrigger", os.getenv("MAX_FILES_PER_TRIGGER", "4"))
-              .json(INBOX).withWatermark("event_time", "10 minutes").dropDuplicates(["event_id"]))
+              .json(INBOX))
     query = (source.writeStream.foreachBatch(process_batch).outputMode("append")
              .option("checkpointLocation", CHECKPOINT).trigger(processingTime="10 seconds").start())
     query.awaitTermination()

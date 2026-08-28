@@ -1,0 +1,31 @@
+{
+  "scenario": "concept_drift_v2",
+  "seed": 20260828,
+  "start_time": "2025-01-01T00:00:00Z",
+  "logical_servers": 2,
+  "days": 2,
+  "sample_interval_minutes": 5,
+  "data_centers": 1,
+  "schema_v2_start_day": 2,
+  "drift_start_day": 2,
+  "drift_transition_days": 0,
+  "failure_horizon_minutes": 30,
+  "precursor_window_minutes": 30,
+  "concept_drift_strength": 1.0,
+  "incident_windows": [
+    {"start_day": 1, "end_day": 1}
+  ],
+  "quality_error_rate": 0.10,
+  "late_event_rate": 0.0,
+  "duplicate_rate": 0.02,
+  "quality_defect_rates": {
+    "schema": 0.02,
+    "range": 0.02,
+    "temporal": 0.02,
+    "completeness": 0.02,
+    "cross_field": 0.02
+  },
+  "burst_windows": [
+    {"start_day": 2, "start_hour": 12, "duration_minutes": 60, "multiplier": 8}
+  ]
+}

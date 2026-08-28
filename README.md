@@ -15,6 +15,14 @@ AutoDL 用户请直接阅读 [AutoDL部署指南.md](AutoDL部署指南.md)，�
 
 ## 论文完整实验
 
+E1/E2 新增代码已经实现五类质量真值与检测、accepted/quarantine 路由、无损 Stream/Batch 任务路由、路由审计，以及固定单节点容量下的负载控制对照。正式运行前建议先执行：
+
+```bash
+bash autodl/run_e1_e2_smoke.sh
+```
+
+独立命令、产物说明和验收口径见 [E1_E2实验运行命令.md](E1_E2实验运行命令.md)。
+
 在AutoDL准备好Java 17、Python依赖、`data/development.ndjson`和`data/CMAPSSData`后运行：
 
 ```bash

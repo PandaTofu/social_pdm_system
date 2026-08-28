@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
-from pyspark.sql.types import BooleanType, DoubleType, IntegerType, StringType, StructField, StructType, TimestampType
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from spark.quality import SCHEMA, classify_quality
 
 
 KAFKA = os.getenv("KAFKA_BOOTSTRAP", "kafka:29092")
@@ -22,21 +28,6 @@ DATA_PATH = os.getenv("DATA_PATH", "/data/telemetry")
 CHECKPOINT = os.getenv("CHECKPOINT", "/data/checkpoints/telemetry")
 METRICS_PATH = os.getenv("METRICS_PATH", "/data/metrics")
 MONGO_URI = os.getenv("MONGO_URI", "")
-
-SCHEMA = StructType([
-    StructField("event_id", StringType()), StructField("event_time", TimestampType()), StructField("ingest_time", TimestampType()),
-    StructField("schema_version", IntegerType()), StructField("data_center_id", StringType()), StructField("rack_id", StringType()),
-    StructField("server_id", StringType()), StructField("service_name", StringType()), StructField("cpu_util_pct", DoubleType()),
-    StructField("memory_util_pct", DoubleType()), StructField("disk_util_pct", DoubleType()), StructField("disk_iops", DoubleType()),
-    StructField("disk_queue_depth", DoubleType()), StructField("network_in_mbps", DoubleType()), StructField("network_out_mbps", DoubleType()),
-    StructField("request_rate_rps", DoubleType()), StructField("response_p50_ms", DoubleType()), StructField("response_p95_ms", DoubleType()),
-    StructField("error_rate", DoubleType()), StructField("timeout_rate", DoubleType()), StructField("queue_depth", DoubleType()),
-    StructField("active_connections", IntegerType()), StructField("deployment_id", StringType()), StructField("software_version", StringType()),
-    StructField("config_version", StringType()), StructField("maintenance_flag", BooleanType()), StructField("traffic_campaign_flag", BooleanType()),
-    StructField("failure_within_30min", IntegerType()), StructField("cache_hit_ratio", DoubleType()), StructField("gc_pause_ms", DoubleType()),
-])
-REQUIRED = ["event_id", "event_time", "ingest_time", "schema_version", "data_center_id", "server_id", "cpu_util_pct", "memory_util_pct", "response_p95_ms", "error_rate", "queue_depth"]
-
 
 def spark_session() -> SparkSession:
     return (SparkSession.builder.appName("social-pdm-streaming")
@@ -58,21 +49,8 @@ def parsed_stream(spark: SparkSession) -> DataFrame:
 
 
 def classify(df: DataFrame) -> DataFrame:
-    missing = [F.when(F.col(name).isNull(), F.lit(f"missing_{name}")) for name in REQUIRED]
-    checks = missing + [
-        F.when(~F.col("schema_version").isin(1, 2), F.lit("unsupported_schema")),
-        F.when(~F.col("cpu_util_pct").between(0.0, 100.0), F.lit("cpu_out_of_range")),
-        F.when(~F.col("memory_util_pct").between(0.0, 100.0), F.lit("memory_out_of_range")),
-        F.when(F.col("response_p95_ms") <= 0, F.lit("invalid_response_time")),
-        F.when(~F.col("error_rate").between(0.0, 1.0), F.lit("error_rate_out_of_range")),
-        F.when((F.col("schema_version") == 2) & (F.col("cache_hit_ratio").isNull() | F.col("gc_pause_ms").isNull()), F.lit("v2_required_field_missing")),
-        F.when((F.col("schema_version") == 2) & ~F.col("cache_hit_ratio").between(0.0, 1.0), F.lit("cache_hit_out_of_range")),
-        F.when(F.col("ingest_time") < F.col("event_time"), F.lit("invalid_ingest_time")),
-    ]
-    return (df.withColumn("quality_failure_type", F.concat_ws("|", *checks))
-            .withColumn("is_valid", F.length("quality_failure_type") == 0)
-            .withColumn("late_event_flag", F.col("ingest_time") > F.col("event_time") + F.expr("INTERVAL 10 MINUTES"))
-            .withColumn("event_date", F.to_date("event_time")))
+    """Compatibility wrapper used by existing model and benchmark jobs."""
+    return classify_quality(df)
 
 
 def risk_scored(valid: DataFrame) -> DataFrame:
@@ -108,8 +86,9 @@ def process_batch(batch: DataFrame, batch_id: int) -> None:
 
 def main() -> None:
     spark = spark_session()
-    deduplicated = parsed_stream(spark).withWatermark("event_time", "10 minutes").dropDuplicates(["event_id"])
-    query = (deduplicated.writeStream.foreachBatch(process_batch).outputMode("append")
+    # Keep duplicate observations until foreachBatch so the E1 quality gate can
+    # quarantine and count them instead of silently deleting the evidence.
+    query = (parsed_stream(spark).writeStream.foreachBatch(process_batch).outputMode("append")
              .option("checkpointLocation", CHECKPOINT).trigger(processingTime="10 seconds").start())
     query.awaitTermination()
 

@@ -15,9 +15,9 @@ FEATURES = ("cpu_util_pct", "memory_util_pct", "response_p95_ms", "error_rate", 
 def source_files(path: Path) -> list[Path]:
     if path.is_file():
         return [path]
-    files = sorted(path.rglob("*.ndjson"))
+    files = sorted({*path.rglob("*.ndjson"), *path.rglob("*.json")})
     if not files:
-        raise FileNotFoundError(f"No NDJSON files found under {path}")
+        raise FileNotFoundError(f"No NDJSON/JSON files found under {path}")
     return files
 
 

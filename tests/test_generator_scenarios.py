@@ -11,6 +11,7 @@ from apps.generate_telemetry import (
     deterministic_event_id,
     incident_schedule,
     precursor_severity,
+    records,
     settings_from,
 )
 
@@ -81,6 +82,35 @@ class GeneratorScenarioTests(unittest.TestCase):
         event_id = deterministic_event_id(settings, minute=10, server=1)
         self.assertEqual(event_id, deterministic_event_id(settings, minute=10, server=1))
         self.assertNotEqual(event_id, deterministic_event_id(settings, minute=11, server=1))
+
+    def test_generator_emits_five_category_truth_and_routing_contract(self):
+        config = {
+            "scenario": "concept_drift_v2", "seed": 11,
+            "start_time": "2025-01-01T00:00:00Z", "logical_servers": 2, "days": 2,
+            "sample_interval_minutes": 5, "data_centers": 1,
+            "schema_v2_start_day": 2, "drift_start_day": 2,
+            "failure_horizon_minutes": 30, "precursor_window_minutes": 30,
+            "concept_drift_strength": 1.0,
+            "incident_windows": [{"start_day": 1, "end_day": 1}],
+            "quality_error_rate": 0.25, "late_event_rate": 0,
+            "quality_defect_rates": {
+                "schema": 0.05, "range": 0.05, "temporal": 0.05,
+                "completeness": 0.05, "cross_field": 0.05,
+            },
+            "duplicate_rate": 0.05, "burst_windows": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scenario.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            generated = list(records(settings_from(path)))
+        categories = {
+            row["injected_defect_category"] for row in generated
+            if row["is_injected_defect"]
+        }
+        self.assertTrue({"schema", "range", "temporal", "completeness", "cross_field"} <= categories)
+        self.assertTrue(all(row["expected_route"] in {"stream", "batch"} for row in generated))
+        self.assertTrue(all(row["workload_units"] > 0 for row in generated))
+        self.assertTrue(any(row["duplicate_ordinal"] == 1 for row in generated))
 
 
 if __name__ == "__main__":

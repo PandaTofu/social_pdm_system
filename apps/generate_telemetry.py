@@ -30,6 +30,7 @@ class Settings:
     quality_error_rate: float
     late_event_rate: float
     duplicate_rate: float
+    quality_defect_rates: dict[str, float]
     burst_windows: list[dict[str, Any]]
     scenario: str
     precursor_window: int
@@ -42,13 +43,25 @@ def settings_from(path: Path) -> Settings:
     # JSON is a YAML subset. Keeping this configuration JSON-formatted YAML
     # lets the lightweight generator run without a parser dependency.
     raw = json.loads(path.read_text(encoding="utf-8"))
+    legacy_quality_rate = float(raw["quality_error_rate"])
+    explicit_quality_rates = raw.get("quality_defect_rates")
+    quality_defect_rates = (
+        {str(name): float(rate) for name, rate in explicit_quality_rates.items()}
+        if explicit_quality_rates is not None
+        else {
+            "range": legacy_quality_rate / 2,
+            "completeness": legacy_quality_rate / 2,
+            "temporal": float(raw["late_event_rate"]),
+        }
+    )
     settings = Settings(
         seed=int(raw["seed"]), start_time=datetime.fromisoformat(raw["start_time"].replace("Z", "+00:00")),
         logical_servers=int(raw["logical_servers"]), days=int(raw["days"]),
         interval=int(raw["sample_interval_minutes"]), data_centers=int(raw["data_centers"]),
         schema_v2_start_day=int(raw["schema_v2_start_day"]), drift_start_day=int(raw["drift_start_day"]),
-        horizon=int(raw["failure_horizon_minutes"]), quality_error_rate=float(raw["quality_error_rate"]),
+        horizon=int(raw["failure_horizon_minutes"]), quality_error_rate=legacy_quality_rate,
         late_event_rate=float(raw["late_event_rate"]), duplicate_rate=float(raw["duplicate_rate"]),
+        quality_defect_rates=quality_defect_rates,
         burst_windows=list(raw.get("burst_windows", [])),
         scenario=str(raw.get("scenario", "covariate_shift_v1")),
         precursor_window=int(raw.get("precursor_window_minutes", 90)),
@@ -70,6 +83,15 @@ def settings_from(path: Path) -> Settings:
         raise ValueError("drift_start_day must fall inside the experiment")
     if settings.drift_transition_days < 0:
         raise ValueError("drift_transition_days cannot be negative")
+    unknown_categories = set(settings.quality_defect_rates) - {
+        "schema", "range", "temporal", "completeness", "cross_field"
+    }
+    if unknown_categories:
+        raise ValueError(f"Unsupported quality categories: {sorted(unknown_categories)}")
+    if any(rate < 0 for rate in settings.quality_defect_rates.values()):
+        raise ValueError("Quality defect rates cannot be negative")
+    if sum(settings.quality_defect_rates.values()) >= 1:
+        raise ValueError("Combined quality defect rate must be below one")
     return settings
 
 
@@ -145,6 +167,36 @@ def deterministic_event_id(cfg: Settings, minute: int, server: int) -> str:
     return str(uuid5(NAMESPACE_URL, key))
 
 
+def choose_quality_defect(cfg: Settings, rng: np.random.Generator) -> str | None:
+    """Choose at most one labelled defect category for a base observation."""
+    draw = float(rng.random())
+    cumulative = 0.0
+    for category in ("schema", "range", "temporal", "completeness", "cross_field"):
+        cumulative += cfg.quality_defect_rates.get(category, 0.0)
+        if draw < cumulative:
+            return category
+    return None
+
+
+def task_profile(
+    rng: np.random.Generator,
+    failure_warning: int,
+    traffic_campaign: bool,
+) -> tuple[str, str, int, str, float]:
+    """Generate an independently labelled task class for the E2 router."""
+    if failure_warning:
+        return "incident_response", "high", 250, "stream", 2.5
+    draw = float(rng.random())
+    incident_cutoff = 0.35 if traffic_campaign else 0.12
+    if draw < incident_cutoff:
+        return "incident_enrichment", "high", 500, "stream", 1.8
+    if draw < 0.70:
+        return "health_monitor", "medium", 1000, "stream", 1.0
+    if draw < 0.92:
+        return "capacity_analytics", "low", 300_000, "batch", 1.4
+    return "model_feedback", "low", 900_000, "batch", 2.0
+
+
 def records(cfg: Settings) -> Iterable[dict[str, Any]]:
     rng = np.random.default_rng(cfg.seed)
     total_minutes = cfg.days * 1440
@@ -187,7 +239,7 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                 queue += queue_shift * severity * strength
                 disk_incident_shift = disk_shift * severity * strength
             response_p50 = float(rng.lognormal(4.15, .32) * (1 + queue / 120))
-            response_p95 = response_p50 * float(rng.lognormal(.7, .22))
+            response_p95 = max(response_p50, response_p50 * float(rng.lognormal(.7, .22)))
             # Deployment changes the relationship between app metrics and risk.
             if cfg.scenario == "covariate_shift_v1":
                 error_alpha = 1.2 + (3 if near_incident else 0)
@@ -204,6 +256,11 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                     response_p95 *= ((1 + .17 * drift_fraction)
                                      * (1 + 2.2 * severity * cfg.concept_drift_strength * drift_fraction))
                     error_rate = min(1.0, error_rate * (1 + .7 * drift_fraction))
+            failure_warning = future_failure(incidents, server, minute, cfg.horizon)
+            traffic_campaign = burst > 1
+            task_type, criticality, latency_sla_ms, expected_route, task_cost = task_profile(
+                rng, failure_warning, traffic_campaign
+            )
             event: dict[str, Any] = {
                 "event_id": deterministic_event_id(cfg, minute, server),
                 "event_time": iso(ts), "ingest_time": iso(ts + timedelta(seconds=int(rng.integers(0, 8)))),
@@ -221,21 +278,56 @@ def records(cfg: Settings) -> Iterable[dict[str, Any]]:
                 "active_connections": int(max(1, request_rate * rng.uniform(1.5, 5))),
                 "deployment_id": f"deploy-{day:03d}" if drift else None, "software_version": "2.0.0" if drift else "1.0.0",
                 "config_version": "cfg-b" if drift else "cfg-a", "maintenance_flag": False,
-                "traffic_campaign_flag": burst > 1, "failure_within_30min": future_failure(incidents, server, minute, cfg.horizon),
+                "traffic_campaign_flag": traffic_campaign, "failure_within_30min": failure_warning,
+                "is_injected_defect": False, "injected_defect_category": None,
+                "injected_defect_type": None, "expected_quality_action": "accept",
+                "duplicate_ordinal": 0, "task_type": task_type, "criticality": criticality,
+                "latency_sla_ms": latency_sla_ms, "expected_route": expected_route,
+                "workload_units": round(float(request_rate * task_cost), 3),
+                "source_sequence": int((minute // cfg.interval) * cfg.logical_servers + server) * 2,
             }
             if event["schema_version"] == 2:
                 event.update({"cache_hit_ratio": round(float(rng.beta(9, 2)), 5), "gc_pause_ms": round(float(rng.gamma(2, 6)), 3)})
-            # Controlled quality defects for E1. Event remains serializable so it reaches Spark.
-            roll = rng.random()
-            if roll < cfg.quality_error_rate / 2:
+            # One labelled representative defect per affected base row keeps
+            # category-level Precision/Recall unambiguous and reproducible.
+            defect_category = choose_quality_defect(cfg, rng)
+            defect_type = None
+            if defect_category == "schema":
+                event["schema_version"] = 99
+                defect_type = "unsupported_schema"
+            elif defect_category == "range":
                 event["cpu_util_pct"] = 125.0
-            elif roll < cfg.quality_error_rate:
-                event.pop("memory_util_pct")
-            if rng.random() < cfg.late_event_rate:
+                defect_type = "cpu_out_of_range"
+            elif defect_category == "temporal":
                 event["ingest_time"] = iso(ts + timedelta(minutes=20))
+                defect_type = "event_too_late"
+            elif defect_category == "completeness":
+                event.pop("memory_util_pct")
+                defect_type = "missing_required_field"
+            elif defect_category == "cross_field":
+                event["response_p95_ms"] = round(max(0.001, event["response_p50_ms"] * 0.5), 3)
+                defect_type = "p95_below_p50"
+            if defect_category:
+                event.update({
+                    "is_injected_defect": True,
+                    "injected_defect_category": defect_category,
+                    "injected_defect_type": defect_type,
+                    "expected_quality_action": "quarantine",
+                })
             yield event
-            if rng.random() < cfg.duplicate_rate:
-                yield dict(event)
+            # Duplicate only clean base rows, then mark the later occurrence so
+            # the detector can retain the original and score the copy as truth.
+            if not defect_category and rng.random() < cfg.duplicate_rate:
+                duplicate = dict(event)
+                duplicate.update({
+                    "is_injected_defect": True,
+                    "injected_defect_category": "completeness",
+                    "injected_defect_type": "duplicate_event",
+                    "expected_quality_action": "quarantine",
+                    "duplicate_ordinal": 1,
+                    "source_sequence": event["source_sequence"] + 1,
+                })
+                yield duplicate
 
 
 def publish(rows: Iterable[dict[str, Any]], output: Path | None,

@@ -42,8 +42,18 @@ KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
 "$PYTHON_BIN" apps/generate_telemetry.py --config "$CONFIG" --output-dir "$SOURCE"
 "$PYTHON_BIN" tests/validate_contract.py "$SOURCE"
 
+"$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
+  --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \
+  spark/e1_e2_experiment.py \
+  --source "$SOURCE" --output-dir "$RUN_ROOT/e1_e2" \
+  2>&1 | tee logs/concept-drift-30d-e1-e2.log
+
+# E3 consumes the actual E1 accepted path, ensuring that every subsequent
+# drift/model metric uses the same quality decision recorded in the report.
+ANALYTICAL_SOURCE="$RUN_ROOT/e1_e2/quality/accepted"
+
 "$PYTHON_BIN" autodl/make_drift_windows.py \
-  --source "$SOURCE" --config "$CONFIG" --out-dir "$RUN_ROOT/drift_windows"
+  --source "$ANALYTICAL_SOURCE" --config "$CONFIG" --out-dir "$RUN_ROOT/drift_windows"
 "$PYTHON_BIN" ml/drift_monitor.py \
   --reference "$RUN_ROOT/drift_windows/reference.npz" \
   --current "$RUN_ROOT/drift_windows/current.npz" \
@@ -52,7 +62,7 @@ KS_ALPHA="${PDM_KS_ALPHA:-0.05}"
 "$SPARK_SUBMIT_BIN" --master "$MASTER" --driver-memory "$DRIVER_MEMORY" \
   --conf "spark.sql.shuffle.partitions=$SHUFFLE_PARTITIONS" \
   ml/prepare_adaptive_telemetry.py \
-  --source "$SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
+  --source "$ANALYTICAL_SOURCE" --output-dir "$RUN_ROOT/adaptive_experiment" \
   --drift-report "$RUN_ROOT/drift_report.json" \
   --scenario-name "$SCENARIO_NAME" --generator-config "$CONFIG" \
   2>&1 | tee logs/concept-drift-30d-spark-prepare.log
