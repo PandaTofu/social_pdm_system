@@ -27,14 +27,16 @@ from spark.routing import route_tasks, routing_report, simulate_fixed_capacity
 
 
 def session() -> SparkSession:
-    spark = (
+    builder = (
         SparkSession.builder.appName("social-pdm-e1-e2-experiment")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.sql.adaptive.skewJoin.enabled", "true")
-        .config("spark.sql.shuffle.partitions", os.getenv("SHUFFLE_PARTITIONS", "48"))
-        .getOrCreate()
     )
+    shuffle_partitions = os.getenv("SHUFFLE_PARTITIONS")
+    if shuffle_partitions:
+        builder = builder.config("spark.sql.shuffle.partitions", shuffle_partitions)
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
     return spark
 
