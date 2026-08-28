@@ -16,7 +16,7 @@
   "feedback_split_key": "server_id",
   "drift_detection": {
     "method": "two-sample KS with effect-size and significance gates",
-    "ks_threshold": 0.10,
+    "ks_threshold": 0.08,
     "alpha": 0.05
   },
   "experiment_windows": {

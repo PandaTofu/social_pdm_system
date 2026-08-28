@@ -31,6 +31,9 @@ $env:PYSPARK_DRIVER_PYTHON = $Python
 $env:SPARK_LOCAL_IP = "127.0.0.1"
 $env:SPARK_LOG_LEVEL = "WARN"
 $env:SPARK_LOCAL_DIRS = Join-Path $ProjectRoot ".runtime\spark-tmp"
+$ScenarioConfig = Get-Content $Config -Raw | ConvertFrom-Json
+$KsThreshold = [string]$ScenarioConfig.drift_detection.ks_threshold
+$KsAlpha = [string]$ScenarioConfig.drift_detection.alpha
 New-Item -ItemType Directory -Force -Path (Split-Path $Source), $RunRoot, $Figures, "logs", $env:SPARK_LOCAL_DIRS | Out-Null
 
 function Invoke-Checked {
@@ -42,7 +45,7 @@ function Invoke-Checked {
 Invoke-Checked $Python @("apps/generate_telemetry.py", "--config", $Config, "--output-dir", $Source) "logs/local-30d-generate.log"
 Invoke-Checked $Python @("tests/validate_contract.py", $Source) "logs/local-30d-contract.log"
 Invoke-Checked $Python @("autodl/make_drift_windows.py", "--source", $Source, "--config", $Config, "--out-dir", "$RunRoot/drift_windows") "logs/local-30d-drift-windows.log"
-Invoke-Checked $Python @("ml/drift_monitor.py", "--reference", "$RunRoot/drift_windows/reference.npz", "--current", "$RunRoot/drift_windows/current.npz", "--threshold", "0.10", "--alpha", "0.05", "--out", "$RunRoot/drift_report.json") "logs/local-30d-drift.log"
+Invoke-Checked $Python @("ml/drift_monitor.py", "--reference", "$RunRoot/drift_windows/reference.npz", "--current", "$RunRoot/drift_windows/current.npz", "--threshold", $KsThreshold, "--alpha", $KsAlpha, "--out", "$RunRoot/drift_report.json") "logs/local-30d-drift.log"
 
 Invoke-Checked $SparkSubmit @(
     "--master", "local[6]", "--driver-memory", "3g",
