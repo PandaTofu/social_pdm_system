@@ -156,6 +156,53 @@ def write_explanations(model, evaluation_frame, threshold: float, output_dir: Pa
         return {"status": "unsupported", "rows": 0, "error": f"{type(error).__name__}: {error}"}
 
 
+def write_dashboard_predictions(model, health_frame, recent_frame, threshold: float,
+                                output_dir: Path, recent_days: tuple[int, int],
+                                max_alert_rows: int) -> dict[str, object]:
+    """Export raw telemetry plus model scores for the read-only dashboard.
+
+    ``health_frame`` contains one latest observation per logical server.
+    ``recent_frame`` is deliberately limited to one or two evaluation days so
+    dashboard evidence can be regenerated without scoring the complete
+    simulation. TreeSHAP columns are exported separately by
+    :func:`write_explanations` and are never mixed with raw telemetry here.
+    """
+    context = ["event_id", "event_time", "server_id", TARGET, "day"]
+    display_columns = context + [name for name in BASE_FEATURES if name in health_frame.columns]
+    health_predictions = model.predict(health_frame)
+    health_combined = health_frame[display_columns].cbind(health_predictions)
+    health_destination = output_dir / "server_health_snapshot.csv"
+    h2o.download_csv(health_combined, str(health_destination))
+
+    recent_predictions = model.predict(recent_frame)
+    alert_mask = recent_predictions["p1"] >= threshold
+    alert_frame = recent_frame[alert_mask, :]
+    alert_predictions = recent_predictions[alert_mask, :]
+    total_alert_rows = int(alert_frame.nrows)
+    selected_rows = min(total_alert_rows, max_alert_rows)
+    alert_destination = output_dir / "threshold_alerts.csv"
+    if selected_rows:
+        alert_columns = context + [name for name in BASE_FEATURES if name in alert_frame.columns]
+        combined = alert_frame[0:selected_rows, alert_columns].cbind(alert_predictions[0:selected_rows, :])
+        h2o.download_csv(combined, str(alert_destination))
+    else:
+        # Keep a valid header-only CSV so the dashboard can distinguish a real
+        # zero-alert result from a missing experiment artefact.
+        alert_destination.write_text(
+            ",".join(display_columns + ["predict", "p0", "p1"]) + "\n", encoding="utf-8"
+        )
+    return {
+        "status": "generated",
+        "recent_days": list(recent_days),
+        "health_rows": int(health_frame.nrows),
+        "alert_rows": selected_rows,
+        "total_alert_rows": total_alert_rows,
+        "alerts_truncated": total_alert_rows > selected_rows,
+        "health_snapshot": str(health_destination),
+        "threshold_alerts": str(alert_destination),
+    }
+
+
 def stability_by_window(static_model, adaptive_model, evaluation_frame,
                         adaptive_threshold: float, evaluation_days: tuple[int, int],
                         window_days: int) -> list[dict[str, object]]:
@@ -213,6 +260,10 @@ def main() -> None:
                         help="JSON output created by ml/drift_monitor.py")
     parser.add_argument("--trees", type=int, default=80)
     parser.add_argument("--explain-rows", type=int, default=500)
+    parser.add_argument("--dashboard-days", type=int, default=2,
+                        help="Number of final evaluation days scored for dashboard alert history")
+    parser.add_argument("--dashboard-alert-rows", type=int, default=2000,
+                        help="Maximum recent threshold alerts persisted for the dashboard")
     parser.add_argument("--skip-ablation", action="store_true",
                         help="Skip the unweighted retraining model for a shorter smoke run")
     parser.add_argument("--scenario-name", default="unspecified")
@@ -236,6 +287,12 @@ def main() -> None:
     train_days = tuple(windows["initial_train"])
     feedback_days = tuple(windows["feedback"])
     evaluation_days = tuple(windows["evaluation"])
+    if args.dashboard_days not in (1, 2):
+        raise ValueError("--dashboard-days must be 1 or 2")
+    if args.dashboard_alert_rows <= 0:
+        raise ValueError("--dashboard-alert-rows must be positive")
+    dashboard_days = (max(evaluation_days[0], evaluation_days[1] - args.dashboard_days + 1),
+                      evaluation_days[1])
     configured_start = str(generator_config.get("start_time", ""))[:10]
     experiment_start = args.experiment_start or configured_start or None
 
@@ -255,6 +312,14 @@ def main() -> None:
         feedback_calibration = drift_feedback.filter(F.pmod(F.xxhash64("event_id"), F.lit(10)) >= 7)
         adaptive_training = pre.unionByName(feedback_train) if drift_detected else pre
         evaluation = data.filter(F.col("day").between(*evaluation_days))
+        dashboard_recent = (evaluation.filter(F.col("day").between(*dashboard_days))
+                            .orderBy(F.col("event_time").desc(), F.col("event_id").desc()))
+        latest_window = Window.partitionBy("server_id").orderBy(
+            F.col("event_time").desc(), F.col("event_id").desc()
+        )
+        dashboard_latest = (dashboard_recent
+                            .withColumn("dashboard_row", F.row_number().over(latest_window))
+                            .filter(F.col("dashboard_row") == 1).drop("dashboard_row"))
         pre_csv, pre_rows, pre_positive = export_csv(pre, args.output_dir / "prepared" / "pre_drift_train", True)
         adaptive_csv, adaptive_rows, adaptive_positive = export_csv(
             adaptive_training, args.output_dir / "prepared" / "adaptive_train", True,
@@ -263,6 +328,12 @@ def main() -> None:
         )
         calibration_csv, calibration_rows, calibration_positive = export_csv(feedback_calibration, args.output_dir / "prepared" / "feedback_calibration", False)
         eval_csv, eval_rows, eval_positive = export_csv(evaluation, args.output_dir / "prepared" / "evaluation", False)
+        dashboard_recent_csv, dashboard_recent_rows, _ = export_csv(
+            dashboard_recent, args.output_dir / "prepared" / "dashboard_recent", False
+        )
+        dashboard_latest_csv, dashboard_latest_rows, _ = export_csv(
+            dashboard_latest, args.output_dir / "prepared" / "dashboard_latest", False
+        )
     finally:
         spark.stop()
 
@@ -301,6 +372,20 @@ def main() -> None:
         explanations = write_explanations(
             adaptive_model, evaluation_frame, adaptive_threshold, args.output_dir, args.explain_rows
         )
+        dashboard_recent_frame = h2o.import_file(str(dashboard_recent_csv))
+        dashboard_latest_frame = h2o.import_file(str(dashboard_latest_csv))
+        try:
+            dashboard_exports = write_dashboard_predictions(
+                adaptive_model, dashboard_latest_frame, dashboard_recent_frame,
+                adaptive_threshold, args.output_dir, dashboard_days, args.dashboard_alert_rows,
+            )
+        finally:
+            h2o.remove(dashboard_recent_frame.frame_id)
+            h2o.remove(dashboard_latest_frame.frame_id)
+        model_dir = args.output_dir / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        saved_model_path = Path(h2o.save_model(adaptive_model, path=str(model_dir), force=True))
+        saved_model_reference = saved_model_path.resolve().relative_to(args.output_dir.resolve()).as_posix()
         stability = stability_by_window(
             static_model, adaptive_model, evaluation_frame, adaptive_threshold,
             evaluation_days, int(windows["stability_window_days"]),
@@ -321,6 +406,10 @@ def main() -> None:
             "adaptive_train": {"rows": adaptive_rows, "positive_rows": adaptive_positive},
             "feedback_calibration": {"rows": calibration_rows, "positive_rows": calibration_positive},
             "evaluation": {"rows": eval_rows, "positive_rows": eval_positive},
+            "dashboard_prediction_window": {
+                "days": list(dashboard_days), "rows": dashboard_recent_rows,
+                "latest_server_rows": dashboard_latest_rows,
+            },
             "variants": variants,
             "static_f1_at_0_5": variants["static_rf"]["f1"],
             "adaptive_f1_at_0_5": variants["weighted_retraining"]["f1"],
@@ -332,6 +421,8 @@ def main() -> None:
             "adaptive_threshold_curve": threshold_curve(adaptive_performance),
             "post_drift_daily_stability": stability,
             "shap_explanations": explanations,
+            "dashboard_exports": dashboard_exports,
+            "adaptive_model_path": saved_model_reference,
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
         report["f1_change_at_0_5"] = report["adaptive_f1_at_0_5"] - report["static_f1_at_0_5"]

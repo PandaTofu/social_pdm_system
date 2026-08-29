@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}Social PDM Dashboard{% endblock %}</title>
+  <style>
+    :root{color-scheme:light;--ink:#17212b;--muted:#667481;--line:#dbe3e8;--blue:#316b8f;--green:#287a59;--amber:#c17a18;--red:#b84444;--bg:#f4f7f9}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+    header{padding:22px max(24px,5vw) 0;color:#fff;background:linear-gradient(120deg,#173b52,#2b6f78)}
+    header h1{margin:0 0 4px;font-size:26px}header p{margin:0;opacity:.82}
+    nav{display:flex;gap:5px;margin-top:18px;overflow:auto}nav a{padding:11px 14px;color:#dcebf0;text-decoration:none;border-radius:8px 8px 0 0;white-space:nowrap}nav a:hover,nav a.active{background:var(--bg);color:var(--ink)}
+    main{max-width:1240px;margin:24px auto;padding:0 20px 45px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+    .card,section{background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 9px #1836460d}.card{padding:16px}.label{color:var(--muted);font-size:12px;letter-spacing:.06em;text-transform:uppercase}.value{margin-top:5px;font-size:25px;font-weight:700}
+    section{margin-top:18px;padding:18px;overflow:auto}h2{margin:0 0 6px;font-size:19px}.subtle{color:var(--muted);margin:0 0 14px}.notice{margin:15px 0;color:var(--muted)}
+    table{width:100%;border-collapse:collapse;min-width:800px}th,td{padding:10px 9px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px;text-transform:uppercase}
+    .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:12px;font-weight:700}.normal{background:#e3f3eb;color:var(--green)}.warning{background:#fbe5e5;color:var(--red)}.pill{display:inline-block;margin:2px 5px 2px 0;padding:2px 7px;border-radius:20px;background:#eaf1f5;font-size:12px}
+    .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0}.toolbar input[type=range]{width:260px}.toolbar button{border:0;border-radius:6px;background:var(--blue);color:#fff;padding:8px 13px;cursor:pointer}
+    .bar-row{display:grid;grid-template-columns:minmax(145px,1.4fr) 3fr 60px;gap:9px;align-items:center;margin:9px 0}.bar-track{height:13px;border-radius:8px;background:#edf2f5;overflow:hidden}.bar-fill{height:100%;min-width:2px;border-radius:8px;background:var(--blue)}
+    .scope{margin:16px 0;padding:12px 15px;border-left:4px solid var(--blue);background:#eaf1f5;color:#42515e}.error{color:var(--red)}
+    @media(max-width:650px){header{padding-left:18px;padding-right:18px}main{padding:0 12px}.bar-row{grid-template-columns:120px 1fr 48px}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Social PDM Operations Dashboard</h1>
+  <p>Near-real-time, model-derived server health evidence from the Spark predictive-maintenance prototype</p>
+  <nav>
+    <a href="/" class="{% if page == 'overview' %}active{% endif %}">Overview</a>
+    <a href="/server-health" class="{% if page == 'health' %}active{% endif %}">Server health</a>
+    <a href="/failure-alerts" class="{% if page == 'alerts' %}active{% endif %}">Failure warnings</a>
+    <a href="/explanations" class="{% if page == 'explanations' %}active{% endif %}">TreeSHAP explanations</a>
+  </nav>
+</header>
+<main>{% block content %}{% endblock %}</main>
+<script>
+const fmt=(v,d=3)=>v===null||v===undefined||v===""?"-":Number(v).toFixed(d);
+const esc=v=>String(v??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+const fetchJson=url=>fetch(url).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()});
+const badge=status=>status==="failure_warning"?'<span class="badge warning">Failure warning</span>':'<span class="badge normal">Normal</span>';
+const bars=(target,rows,valueKey,labelKey)=>{const max=Math.max(...rows.map(x=>Number(x[valueKey])||0),.000001);document.querySelector(target).innerHTML=rows.map(x=>`<div class="bar-row"><span>${esc(x[labelKey])}</span><div class="bar-track"><div class="bar-fill" style="width:${100*(Number(x[valueKey])||0)/max}%"></div></div><strong>${fmt(x[valueKey])}</strong></div>`).join("")||"No explanation data available."};
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Social PDM Spark prototype
 
-本目录是论文架构的可部署原型，不替代论文中对真实集群实验的说明。最新代码结构、指标契约、图表来源和完整实验命令见 [系统代码结构与实验设计.md](系统代码结构与实验设计.md)；早期组件设计见 [详细系统设计.md](详细系统设计.md)。
+本目录是论文架构的可部署原型
 
 ## 两种部署 Profile
 
@@ -8,10 +8,6 @@
 |---|---|---|---|
 | Docker Compose | 普通 Linux VM / 裸金属 | Kafka、MongoDB、NiFi、Spark、H2O 等完整原型 | 单节点服务集成实验；多节点后可继续验证扩缩容 |
 | AutoDL 无 Docker | AutoDL 普通容器 | JSON 文件流、PySpark `local[*]`、Parquet、KS/H2O | E1、E3、单节点加速回放；不证明 Kafka/K8s 性能 |
-
-AutoDL 用户请直接阅读 [AutoDL部署指南.md](AutoDL部署指南.md)，不要在 AutoDL 容器内部安装 Docker。
-
-对于低配普通云服务器，先使用 [云服务器部署指南.md](云服务器部署指南.md) 中的轻量实验容器完成 Git、Java、PySpark 和数据生成冒烟测试；不要直接启动完整 Compose 服务栈。
 
 ## 论文完整实验
 
@@ -23,44 +19,44 @@ bash autodl/run_e1_e2_smoke.sh
 
 独立命令、产物说明和验收口径见 [E1_E2实验运行命令.md](E1_E2实验运行命令.md)。
 
-在AutoDL准备好Java 17、Python依赖、`data/development.ndjson`和`data/CMAPSSData`后运行：
+在AutoDL准备好Java 17、Python依赖和`data/CMAPSSData`后，分别运行C-MAPSS基准实验和30天模拟社交遥测实验：
 
 ```bash
-bash autodl/run_complete_paper_experiment.sh
+bash autodl/run_cmapss_all_subsets.sh \
+  data/CMAPSSData \
+  data/autodl_runtime/cmapss
+
+bash autodl/run_30d_v4_60gb.sh
 ```
 
-脚本依次完成漂移检测、C-MAPSS Logistic/RF/GBT同协议比较与非回归检查、自适应/消融实验、单节点Spark性能实验和统一绘图。输出位于`data/autodl_runtime/paper_run`及`reports/generated`。所有图只读取真实实验产物。
+实验输出按数据集和场景分别保存：
 
-独立场景配置位于`configs/scenarios/`。运行真正改变特征—故障关系的概念漂移场景且不覆盖历史结果：
+- C-MAPSS FD001-FD004结果：`data/autodl_runtime/cmapss`
+- 30天模拟遥测数据：`data/autodl_runtime/scenarios/concept_drift_30d_v4/telemetry`
+- E1、E2、E3及系统性能结果：`data/autodl_runtime/scenarios/concept_drift_30d_v4/results`
+- 模拟场景PNG图表：`reports/scenarios/concept_drift_30d_v4`
+
+所有图表只读取实际实验产物。独立场景配置位于`configs/scenarios/`。
+
+## Web Dashboard访问
+
+Dashboard包含四个页面：总览、`model-derived server health status`、
+`threshold-based failure-warning alerts`和`TreeSHAP explanations`。完整E3实验默认只对
+独立测试期最后2天生成Dashboard告警历史，并为每台逻辑服务器保留最新预测；页面请求本身
+不会训练模型。
+
+新增的Dashboard数据位于：
+
+- `adaptive_experiment/server_health_snapshot.csv`：每台逻辑服务器的最新原始遥测和预测概率；
+- `adaptive_experiment/threshold_alerts.csv`：最近2天内超过校准阈值的告警，默认最多2,000条；
+- `adaptive_experiment/shap_alert_explanations.csv`：告警的TreeSHAP贡献值。
+
+可在运行E3命令时通过`--dashboard-days 1`或`--dashboard-days 2`选择推理范围。实验完成后启动：
 
 ```bash
-bash autodl/run_telemetry_scenario.sh configs/scenarios/concept_drift_v2.json
+PDM_RUNTIME=data/autodl_runtime/scenarios/concept_drift_30d_v4/results \
+python -m flask --app apps.dashboard run --host 0.0.0.0 --port 6008
 ```
 
-实验完成后可启动最小业务Dashboard：
-
-```bash
-PDM_RUNTIME=data/autodl_runtime/paper_run \
-python -m flask --app apps.dashboard run --host 0.0.0.0 --port 8090
-```
-
-## 快速启动（Linux）
-
-1. 安装 Docker Engine 与 Docker Compose plugin。
-2. `cp .env.example .env`，修改密码与对外端口。
-3. `docker compose up -d`。
-4. `docker compose exec generator python /app/generate_telemetry.py --config /app/configs/experiment.yaml --output /data/development.ndjson` 生成开发数据。
-5. 运行 `bash scripts/create_topics.sh`，再将生成器以 `--kafka-bootstrap kafka:29092` 运行，把事件推送至 `telemetry-raw`。
-6. 运行 `bash scripts/submit_spark.sh`；作业会把有效事件写入 Parquet，并将无效事件写到 `telemetry-quarantine`。
-
-首次运行前，请按云端实际路径设置 Spark 的 `S3_ENDPOINT`、access key、secret 和 bucket。任何吞吐/延迟结论都必须采集 Spark event log、Kafka lag 和原始运行 CSV。
-
-## Web UI
-
-- Spark master: `http://<host>:8080`
-- NiFi: `http://<host>:8443/nifi`
-- H2O Flow: `http://<host>:54321`
-- MinIO: `http://<host>:9001`
-- Grafana: `http://<host>:3000`
-
-默认密码只用于本地开发，部署前务必更改。
+访问路径：`/`、`/server-health`、`/failure-alerts`和`/explanations`。健康页可在完整最新快照上
+交互调整阈值；告警历史页可从校准阈值向上调高阈值。页面操作不会覆盖实验校准阈值或修改结果文件。

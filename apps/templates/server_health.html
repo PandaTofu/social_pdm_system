@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Server health · Social PDM{% endblock %}
+{% block content %}
+<h2>Model-derived server health status</h2>
+<p class="subtle">Latest prediction for each logical server. Raw telemetry values are shown only when the dedicated health snapshot is available.</p>
+<div class="grid"><div class="card"><div class="label">Servers</div><div class="value" id="servers">-</div></div><div class="card"><div class="label">Normal</div><div class="value" id="normal">-</div></div><div class="card"><div class="label">Failure warnings</div><div class="value" id="warnings">-</div></div></div>
+<div class="toolbar"><label>Display threshold: <strong id="threshold-label">-</strong></label><input id="threshold-control" type="range" min="0" max="1" step="0.01"><button id="reset">Use calibrated threshold</button></div>
+<div id="notice" class="notice">Loading…</div>
+<section><table><thead><tr><th>Status</th><th>Server</th><th>Last observation</th><th>Failure probability</th><th>CPU %</th><th>Memory %</th><th>P95 response ms</th><th>Error rate</th><th>Queue depth</th></tr></thead><tbody id="rows"></tbody></table></section>
+{% endblock %}
+{% block scripts %}
+<script>
+let calibrated=.5;
+const thresholdLabel=document.querySelector('#threshold-label'),control=document.querySelector('#threshold-control'),serverValue=document.querySelector('#servers'),normalValue=document.querySelector('#normal'),warningValue=document.querySelector('#warnings'),noticeBox=document.querySelector('#notice'),rowsBody=document.querySelector('#rows'),resetButton=document.querySelector('#reset');
+const load=t=>fetchJson(`/api/health-status?threshold=${t}`).then(d=>{thresholdLabel.textContent=fmt(d.threshold);serverValue.textContent=d.summary.servers;normalValue.textContent=d.summary.normal;warningValue.textContent=d.summary.failure_warning;noticeBox.textContent=`Source: ${d.source} · refreshed ${d.generated_at}`;rowsBody.innerHTML=d.rows.map(r=>{const m=r.telemetry||{};return `<tr><td>${badge(r.status)}</td><td>${esc(r.server_id)}</td><td>${esc(r.event_time)}</td><td>${fmt(r.probability)}</td><td>${fmt(m.cpu_util_pct,1)}</td><td>${fmt(m.memory_util_pct,1)}</td><td>${fmt(m.response_p95_ms,1)}</td><td>${fmt(m.error_rate,4)}</td><td>${fmt(m.queue_depth,1)}</td></tr>`}).join('')||'<tr><td colspan="9">No server health snapshot is available.</td></tr>'});
+fetchJson('/api/overview').then(d=>{calibrated=d.threshold;control.value=calibrated;load(calibrated)});
+control.addEventListener('input',()=>{thresholdLabel.textContent=fmt(control.value)});control.addEventListener('change',()=>load(control.value));resetButton.addEventListener('click',()=>{control.value=calibrated;load(calibrated)});
+setInterval(()=>load(control.value),15000);
+</script>
+{% endblock %}

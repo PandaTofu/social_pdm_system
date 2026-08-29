@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}TreeSHAP explanations · Social PDM{% endblock %}
+{% block content %}
+<h2>TreeSHAP explanations</h2><p class="subtle">Feature contributions explain why the adaptive Random Forest produced each selected warning. Values are SHAP contributions, not raw CPU, memory or queue measurements.</p>
+<section><h2>Global mean absolute contribution</h2><div id="chart">Loading…</div></section><div id="notice" class="notice"></div>
+<section><table><thead><tr><th>Time</th><th>Server</th><th>Failure probability</th><th>Top local contributors</th><th>Event ID</th></tr></thead><tbody id="rows"></tbody></table></section>
+{% endblock %}
+{% block scripts %}
+<script>
+const noticeBox=document.querySelector('#notice'),rowsBody=document.querySelector('#rows');const refresh=()=>fetchJson('/api/explanations?limit=100').then(d=>{bars('#chart',d.global_shap||[],'mean_abs_shap','feature');noticeBox.textContent=`Source: ${d.source} · refreshed ${d.generated_at}`;rowsBody.innerHTML=d.rows.map(r=>`<tr><td>${esc(r.event_time)}</td><td>${esc(r.server_id)}</td><td>${fmt(r.probability)}</td><td>${r.top_contributors.map(x=>`<span class="pill">${esc(x.feature)}: ${fmt(x.value)}</span>`).join('')}</td><td>${esc(r.event_id)}</td></tr>`).join('')||'<tr><td colspan="5">No TreeSHAP explanations are available.</td></tr>'}).catch(e=>noticeBox.innerHTML=`<span class="error">Explanation data unavailable: ${esc(e)}</span>`);refresh();setInterval(refresh,15000);
+</script>
+{% endblock %}

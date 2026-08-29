@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Failure warnings · Social PDM{% endblock %}
+{% block content %}
+<h2>Threshold-based failure-warning alerts</h2><p class="subtle">Rows whose predicted probability reaches the selected operating threshold. The threshold may be raised for a stricter operational view; changes are temporary and do not overwrite the calibrated experimental threshold.</p>
+<div class="grid"><div class="card"><div class="label">Displayed alerts</div><div class="value" id="count">-</div></div><div class="card"><div class="label">Threshold</div><div class="value" id="threshold-value">-</div></div></div>
+<div class="toolbar"><input id="threshold-control" type="range" min="0" max="1" step="0.01"><button id="reset">Use calibrated threshold</button></div><div id="notice" class="notice">Loading…</div>
+<section><table><thead><tr><th>Status</th><th>Time</th><th>Server</th><th>Failure probability</th><th>Observed warning label</th><th>Event ID</th></tr></thead><tbody id="rows"></tbody></table></section>
+{% endblock %}
+{% block scripts %}
+<script>
+let calibrated=.5;const control=document.querySelector('#threshold-control'),thresholdValue=document.querySelector('#threshold-value'),countValue=document.querySelector('#count'),noticeBox=document.querySelector('#notice'),rowsBody=document.querySelector('#rows'),resetButton=document.querySelector('#reset');
+const load=t=>fetchJson(`/api/alerts?threshold=${t}&limit=500`).then(d=>{const meta=d.export_metadata||{};countValue.textContent=d.count;thresholdValue.textContent=fmt(d.threshold);noticeBox.textContent=`Source: ${d.source}${meta.alerts_truncated?' · persisted alert history was capped during export':''} · refreshed ${d.generated_at}`;rowsBody.innerHTML=d.rows.map(r=>`<tr><td>${badge(r.status)}</td><td>${esc(r.event_time)}</td><td>${esc(r.server_id)}</td><td>${fmt(r.probability)}</td><td>${r.observed_label}</td><td>${esc(r.event_id)}</td></tr>`).join('')||'<tr><td colspan="6">No alerts reach this threshold.</td></tr>'});
+fetchJson('/api/overview').then(d=>{calibrated=d.threshold;control.min=calibrated;control.value=calibrated;load(calibrated)});control.addEventListener('input',()=>thresholdValue.textContent=fmt(control.value));control.addEventListener('change',()=>load(control.value));resetButton.addEventListener('click',()=>{control.value=calibrated;load(calibrated)});setInterval(()=>load(control.value),15000);
+</script>
+{% endblock %}

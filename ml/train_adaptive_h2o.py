@@ -15,6 +15,7 @@ from adaptive_telemetry_comparison import (
     stability_by_window,
     threshold_curve,
     train_h2o,
+    write_dashboard_predictions,
     write_explanations,
 )
 
@@ -24,11 +25,14 @@ def main() -> None:
     parser.add_argument("--prepared-manifest", type=Path, required=True)
     parser.add_argument("--trees", type=int, default=80)
     parser.add_argument("--explain-rows", type=int, default=500)
+    parser.add_argument("--dashboard-alert-rows", type=int, default=2000)
     parser.add_argument("--skip-ablation", action="store_true")
     parser.add_argument("--h2o-memory", default="4G")
     parser.add_argument("--h2o-threads", type=int, default=4)
     parser.add_argument("--h2o-port", type=int, default=6008)
     args = parser.parse_args()
+    if args.dashboard_alert_rows <= 0:
+        raise ValueError("--dashboard-alert-rows must be positive")
 
     started = time.perf_counter()
     manifest = json.loads(args.prepared_manifest.read_text(encoding="utf-8"))
@@ -83,6 +87,21 @@ def main() -> None:
         explanations = write_explanations(
             adaptive_model, evaluation_frame, adaptive_threshold, output_dir, args.explain_rows
         )
+        dashboard_recent_frame = h2o.import_file(str(csv_paths["dashboard_recent"]))
+        dashboard_latest_frame = h2o.import_file(str(csv_paths["dashboard_latest"]))
+        try:
+            dashboard_exports = write_dashboard_predictions(
+                adaptive_model, dashboard_latest_frame, dashboard_recent_frame,
+                adaptive_threshold, output_dir,
+                tuple(manifest["dashboard_prediction_days"]), args.dashboard_alert_rows,
+            )
+        finally:
+            h2o.remove(dashboard_recent_frame.frame_id)
+            h2o.remove(dashboard_latest_frame.frame_id)
+        model_dir = output_dir / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        saved_model_path = Path(h2o.save_model(adaptive_model, path=str(model_dir), force=True))
+        saved_model_reference = saved_model_path.resolve().relative_to(output_dir.resolve()).as_posix()
         stability = stability_by_window(
             static_model, adaptive_model, evaluation_frame, adaptive_threshold,
             evaluation_days, int(windows["stability_window_days"]),
@@ -109,6 +128,11 @@ def main() -> None:
             "adaptive_train": counts["adaptive_train"],
             "feedback_calibration": counts["feedback_calibration"],
             "evaluation": counts["evaluation"],
+            "dashboard_prediction_window": {
+                "days": manifest["dashboard_prediction_days"],
+                "rows": counts["dashboard_recent"]["rows"],
+                "latest_server_rows": counts["dashboard_latest"]["rows"],
+            },
             "variants": variants,
             "static_f1_at_0_5": variants["static_rf"]["f1"],
             "adaptive_f1_at_0_5": variants["weighted_retraining"]["f1"],
@@ -120,6 +144,8 @@ def main() -> None:
             "adaptive_threshold_curve": threshold_curve(adaptive_performance),
             "post_drift_daily_stability": stability,
             "shap_explanations": explanations,
+            "dashboard_exports": dashboard_exports,
+            "adaptive_model_path": saved_model_reference,
             "duration_seconds": round(time.perf_counter() - started, 3),
             "prepared_manifest": args.prepared_manifest.name,
         }

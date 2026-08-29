@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pyspark import StorageLevel
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 from adaptive_telemetry_comparison import (
     BASE_FEATURES,
@@ -42,6 +43,8 @@ def main() -> None:
     parser.add_argument("--evaluation-days", nargs=2, type=int)
     parser.add_argument("--stability-window-days", type=int)
     parser.add_argument("--recency-weight", type=float)
+    parser.add_argument("--dashboard-days", type=int, choices=(1, 2), default=2,
+                        help="Final evaluation days prepared for dashboard scoring")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -58,6 +61,8 @@ def main() -> None:
     train_days = tuple(windows["initial_train"])
     feedback_days = tuple(windows["feedback"])
     evaluation_days = tuple(windows["evaluation"])
+    dashboard_days = (max(evaluation_days[0], evaluation_days[1] - args.dashboard_days + 1),
+                      evaluation_days[1])
     configured_start = str(generator_config.get("start_time", ""))[:10]
     experiment_start = args.experiment_start or configured_start or None
     history_features_enabled = bool(generator_config.get("history_features", False))
@@ -89,6 +94,14 @@ def main() -> None:
         feedback_calibration = drift_feedback.filter(split_bucket >= 7)
         adaptive_training = pre.unionByName(feedback_train) if drift_detected else pre
         evaluation = data.filter(F.col("day").between(*evaluation_days))
+        dashboard_recent = (evaluation.filter(F.col("day").between(*dashboard_days))
+                            .orderBy(F.col("event_time").desc(), F.col("event_id").desc()))
+        latest_window = Window.partitionBy("server_id").orderBy(
+            F.col("event_time").desc(), F.col("event_id").desc()
+        )
+        dashboard_latest = (dashboard_recent
+                            .withColumn("dashboard_row", F.row_number().over(latest_window))
+                            .filter(F.col("dashboard_row") == 1).drop("dashboard_row"))
 
         pre_csv, pre_rows, pre_positive = export_csv(
             pre, args.output_dir / "prepared" / "pre_drift_train", True,
@@ -108,13 +121,21 @@ def main() -> None:
             evaluation, args.output_dir / "prepared" / "evaluation", False,
             feature_columns=feature_columns,
         )
+        dashboard_recent_csv, dashboard_recent_rows, dashboard_recent_positive = export_csv(
+            dashboard_recent, args.output_dir / "prepared" / "dashboard_recent", False,
+            feature_columns=feature_columns,
+        )
+        dashboard_latest_csv, dashboard_latest_rows, dashboard_latest_positive = export_csv(
+            dashboard_latest, args.output_dir / "prepared" / "dashboard_latest", False,
+            feature_columns=feature_columns,
+        )
     finally:
         if data is not None:
             data.unpersist()
         spark.stop()
 
     manifest = {
-        "format_version": 2,
+        "format_version": 3,
         "scenario": args.scenario_name,
         "generator_config": generator_config or None,
         "experiment_start": experiment_start,
@@ -126,17 +147,22 @@ def main() -> None:
         "feature_columns": feature_columns,
         "history_features_enabled": history_features_enabled,
         "feedback_split_key": feedback_split_key,
+        "dashboard_prediction_days": list(dashboard_days),
         "csv_paths": {
             "pre_drift_train": relative_csv(pre_csv, args.output_dir),
             "adaptive_train": relative_csv(adaptive_csv, args.output_dir),
             "feedback_calibration": relative_csv(calibration_csv, args.output_dir),
             "evaluation": relative_csv(eval_csv, args.output_dir),
+            "dashboard_recent": relative_csv(dashboard_recent_csv, args.output_dir),
+            "dashboard_latest": relative_csv(dashboard_latest_csv, args.output_dir),
         },
         "row_counts": {
             "pre_drift_train": {"rows": pre_rows, "positive_rows": pre_positive},
             "adaptive_train": {"rows": adaptive_rows, "positive_rows": adaptive_positive},
             "feedback_calibration": {"rows": calibration_rows, "positive_rows": calibration_positive},
             "evaluation": {"rows": eval_rows, "positive_rows": eval_positive},
+            "dashboard_recent": {"rows": dashboard_recent_rows, "positive_rows": dashboard_recent_positive},
+            "dashboard_latest": {"rows": dashboard_latest_rows, "positive_rows": dashboard_latest_positive},
         },
         "duration_seconds": round(time.perf_counter() - started, 3),
     }
